@@ -92,17 +92,6 @@ const handleMessage = (ctx, peer, message) => {
             return;
         }
         case 'ACK': {
-            console.log('>ACK');
-            if (typeof(ctx.pings[peer.id]) === 'undefined') {
-                console.log("ping ack without related ping");
-                return;
-            }
-            const ping = ctx.pings[peer.id];
-            if (String(ping.seq) !== String(msg[0])) {
-                console.log("ping ack for seq [" + msg[0] + "] and ping is [" + ping.seq + "]");
-                return;
-            }
-            delete ctx.pings[peer.id];
             return;
         }
         case 'INV': {
@@ -146,7 +135,10 @@ const incoming = (ctx, socket) => {
     sendPeerMsg(ctx, peer, [0, 'HELLO', ctx.version]);
     ctx.peers.push(peer);
     const hashes = Object.keys(ctx.annByHash).map((x) => (new Buffer(x, 'hex')));
-    sendPeerMsg(ctx, peer, [0, 'INV', 0, hashes]);
+    while (hashes.length) {
+        const h = hashes.splice(0, 128);
+        sendPeerMsg(ctx, peer, [0, 'INV', 0, hashes]);
+    }
     socket.on('message', function(message) {
         try {
             handleMessage(ctx, peer, message);
@@ -203,9 +195,8 @@ const pingCycle = (ctx) => {
         const lag = now() - p.mut.timeOfLastMessage;
         if (lag > DROP_AFTER_MS) {
             dropPeer(ctx, p);
-        } else if (lag > PING_AFTER_MS && typeof(ctx.pings[p.id]) === 'undefined') {
+        } else if (lag > PING_AFTER_MS) {
             const seq = ctx.mut.seq++;
-            ctx.pings[p.id] = { seq: seq, time: now() };
             sendPeerMsg(ctx, p, [seq, 'PING']);
             console.log('<PING ' + seq);
         }
@@ -220,7 +211,6 @@ const runServer = (ctx, httpServer) => {
 const create = module.exports.create = () => {
     const ctx = Object.freeze({
         peers: [],
-        pings: {},
         annByHash: {},
         msgpack: Msgpack(),
         version: 1,

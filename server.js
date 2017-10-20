@@ -26,7 +26,6 @@ const Cjdnsadmin = require('cjdnsadmin');
 const Cjdnsann = require('cjdnsann');
 const Http = require('http');
 
-const Database = require('./database');
 const Peer = require('./peer');
 
 
@@ -144,7 +143,7 @@ const versionFromAnnouncement = (ann) => {
     return ver ? ver.version : undefined;
 };
 
-const addAnnouncement = (ctx, node, ann, annHash) => {
+const addAnnouncement = (ctx, node, ann) => {
     const time = Number('0x' + ann.timestamp);
     const sinceTime = time - AGREED_TIMEOUT_MS;
     const newAnnounce = [];
@@ -162,11 +161,11 @@ const addAnnouncement = (ctx, node, ann, annHash) => {
         if (safe) {
             newAnnounce.push(a);
         } else {
-            ctx.peer.deleteAnn(annHash);
+            ctx.peer.deleteAnn(a.hash);
         }
     });
-    node.mut.announcements.splice(0, node.mut.announcements.length);
-    Array.prototype.push.apply(node.mut.announcements, newAnnounce);
+    node.mut.timestamp = ann.timestamp;
+    node.mut.announcements = newAnnounce;
 };
 
 const mkNode = (ctx, obj) => {
@@ -213,7 +212,7 @@ const addNode = (ctx, node, overwrite) => {
     return node;
 };
 
-const handleAnnounce = (ctx, annBin, fromNode, fromDb) => {
+const handleAnnounce = (ctx, annBin, fromNode) => {
     let ann;
     let replyError = 'none';
     const annHash = Crypto.createHash('sha512').update(annBin).digest('hex');
@@ -248,7 +247,7 @@ const handleAnnounce = (ctx, annBin, fromNode, fromDb) => {
         }
     } else {
         maxClockSkew = MAX_GLOBAL_CLOCKSKEW_MS;
-        if (!fromDb && ctx.mut.selfNode && ann && ann.snodeIp === ctx.mut.selfNode.ipv6) {
+        if (ctx.mut.selfNode && ann && ann.snodeIp === ctx.mut.selfNode.ipv6) {
             console.log("announcement meant for other snode");
             replyError = "wrong_snode";
             ann = undefined;
@@ -310,7 +309,7 @@ const handleAnnounce = (ctx, annBin, fromNode, fromDb) => {
             node = addNode(ctx, nodex, true);
             console.log(node.mut.announcements.length + ' announcements');
         } else {
-            addAnnouncement(ctx, node, ann, annHash);
+            addAnnouncement(ctx, node, ann);
         }
     } else {
         node = addNode(ctx, nodex, false);
@@ -338,16 +337,6 @@ const handleAnnounce = (ctx, annBin, fromNode, fromDb) => {
     });
 
     if (peersIp6.length) {
-        if (!fromDb) {
-            ctx.db.addMessage(
-                ann.nodeIp,
-                annHash,
-                Number('0x'+ann.timestamp),
-                annBin,
-                peersIp6,
-                () => {}
-            );
-        }
         ctx.peer.addAnn(annHash, ann.binary);
     }
     return { stateHash: nodeAnnouncementHash(node), error: replyError };
@@ -533,28 +522,12 @@ const keepTableClean = (ctx) => {
             if (minTime > Number(node.timestamp)) {
                 console.log("forgetting node [" + nodeIp + "]");
                 delete ctx.nodesByIp;
-                continue;
+                node.mut.announcements.forEach((ann) => {
+                    ctx.peer.deleteAnn(ann.hash);
+                });
             }
         }
     }, KEEP_TABLE_CLEAN_CYCLE);
-};
-
-const loadDb = (ctx, cb) => {
-    console.log('gc');
-    nThen((waitFor) => {
-        ctx.db._db.on('notification', (n) => { console.log(n); });
-        const minTs = now() - GLOBAL_TIMEOUT_MS;
-        ctx.db.garbageCollect(minTs, waitFor(() => {
-            console.log("Garbage collection complete");
-        }));
-    }).nThen((waitFor) => {
-        console.log('gc3');
-        ctx.db.getAllMessages((msgBytes) => {
-            handleAnnounce(ctx, msgBytes, false, true);
-        }, waitFor(() => {
-            console.log('messages loaded');
-        }));
-    }).nThen(cb);
 };
 
 const getConfig = () => {
@@ -575,7 +548,6 @@ const main = () => {
         version: 1,
 
         config: config,
-        db: Database.create(config),
         peer: Peer.create(),
 
         mut: {
@@ -585,14 +557,10 @@ const main = () => {
         }
     });
 
-    nThen((waitFor) => {
-        loadDb(ctx, waitFor());
-    }).nThen((waitFor) => {
-        //keepTableClean(ctx);
-        if (config.connectCjdns) { service(ctx); }
-        testSrv(ctx);
-        ctx.peer.onAnnounce((peer, msg) => { handleAnnounce(ctx, msg, false, false); });
-        (ctx.config.peers || []).forEach(ctx.peer.connectTo);
-    });
+    keepTableClean(ctx);
+    if (config.connectCjdns) { service(ctx); }
+    testSrv(ctx);
+    ctx.peer.onAnnounce((peer, msg) => { handleAnnounce(ctx, msg, false, false); });
+    (ctx.config.peers || []).forEach(ctx.peer.connectTo);
 };
 main();
