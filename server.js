@@ -215,7 +215,14 @@ const addNode = (ctx, node, overwrite) => {
 const handleAnnounce = (ctx, annBin, fromNode) => {
     let ann;
     let replyError = 'none';
-    const annHash = Crypto.createHash('sha512').update(annBin).digest('hex');
+    let annHash;
+    try {
+        annHash = Crypto.createHash('sha512').update(annBin).digest('hex');
+    } catch (e) {
+        console.log(annBin);
+        console.log(e.stack);
+        throw e;
+    }
     //console.log("ann: " + annBin.toString('hex'));
     console.log("ann:" + annHash);
     try {
@@ -230,7 +237,7 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     let node;
     if (ann) { node = ctx.nodesByIp[ann.nodeIp]; }
 
-    if (ann && node && node.mut.timestamp > ann.timestamp) {
+    if (fromNode && ann && node && node.mut.timestamp > ann.timestamp) {
         console.log("old timestamp");
         replyError = "old_message";
         ann = undefined;
@@ -502,6 +509,20 @@ const testSrv = (ctx) => {
             }
             out.push.apply(out, outLinks);
             res.end(out.map((x)=>JSON.stringify(x)).join('\n'));
+        } else if (ents[0] === 'dump') {
+            res.setHeader('Content-Type', 'application/octet-stream');
+            for (const ip in ctx.nodesByIp) {
+                const node = ctx.nodesByIp[ip];
+                node.announcements.forEach((ann) => {
+                    const len = new Buffer(4);
+                    len.writeInt32BE(ann.binary.length, 0);
+                    res.write(len);
+                    res.write(ann.binary);
+                });
+            }
+            const end = new Buffer(4);
+            end.writeInt32BE(0, 0);
+            res.end(end);
         } else {
             //console.log(req.url);
             res.end(req.url);

@@ -137,7 +137,7 @@ const incoming = (ctx, socket) => {
     const hashes = Object.keys(ctx.annByHash).map((x) => (new Buffer(x, 'hex')));
     while (hashes.length) {
         const h = hashes.splice(0, 128);
-        sendPeerMsg(ctx, peer, [0, 'INV', 0, hashes]);
+        sendPeerMsg(ctx, peer, [0, 'INV', 0, h]);
     }
     socket.on('message', function(message) {
         try {
