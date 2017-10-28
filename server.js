@@ -30,7 +30,7 @@ const Peer = require('./peer');
 
 
 const MS_MINUTE = 1000 * 60;
-const KEEP_TABLE_CLEAN_CYCLE = 4 * 60 * MS_MINUTE;
+const KEEP_TABLE_CLEAN_CYCLE = 1000 * 30;
 const AGREED_TIMEOUT_MS = 10 * MS_MINUTE;
 const MAX_CLOCKSKEW_MS = (1000 * 10);
 const MAX_GLOBAL_CLOCKSKEW_MS = (1000 * 60 * 60 * 20);
@@ -480,6 +480,8 @@ const testSrv = (ctx) => {
             if (!tar) { res.end("tar not found"); return; }
             const r = getRoute(ctx, src, tar);
             res.end(JSON.stringify(r, null, '  '));
+        } else if (ents[0] === 'ni') {
+            res.end(JSON.stringify({ node: ctx.nodesByIp[ents[1]] }, null, '  '));
         } else if (ents[0] === 'walk') {
             const out = [];
             const outLinks = [];
@@ -513,7 +515,7 @@ const testSrv = (ctx) => {
             res.setHeader('Content-Type', 'application/octet-stream');
             for (const ip in ctx.nodesByIp) {
                 const node = ctx.nodesByIp[ip];
-                node.announcements.forEach((ann) => {
+                node.mut.announcements.forEach((ann) => {
                     const len = new Buffer(4);
                     len.writeInt32BE(ann.binary.length, 0);
                     res.write(len);

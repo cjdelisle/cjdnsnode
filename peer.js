@@ -107,6 +107,7 @@ const handleMessage = (ctx, peer, message) => {
         }
         case 'DATA': {
             if (!peer.outgoing) { return; }
+            if (!msg[2]) { return; }
             ctx.mut.onAnnounce(peer, msg[2]);
         }
     }
