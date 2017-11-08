@@ -22,7 +22,6 @@
   },
   "scripts": {
     "lint": "jshint --config .jshintrc --exclude-path .jshintignore .",
-    "flow": "./node_modules/.bin/flow",
-    "test": "node ./test.js"
+    "flow": "./node_modules/.bin/flow"
   }
 }
