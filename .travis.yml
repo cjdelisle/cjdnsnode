@@ -9,6 +9,5 @@ before_script:
   - cp ./config.example.js ./config.js
 
 script:
-  - npm test
   - npm run-script lint
   - npm run-script flow
