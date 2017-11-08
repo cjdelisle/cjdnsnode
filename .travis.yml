@@ -6,7 +6,6 @@ node_js:
   - '4'
 
 before_script:
-  - psql -U postgres < ./initdb.sql
   - cp ./config.example.js ./config.js
 
 script:
