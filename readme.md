@@ -4,8 +4,8 @@ A supernode is a replicating database of node/link information, it's collected b
 network for peers but PLEASE DON'T ENABLE SCANNING, there is another snode scanning and you can
 simply connect to it's socket and listen for all of the updates sent right to your door.
 
-Snode allows dumping of it's internal state using TCP/JSON (replication socket) and it allows
-querying to get a path between any 2 nodes given by their keys using UDB/Benc.
+Snode allows dumping of its internal state using TCP/JSON (replication socket) and it allows
+querying to get a path between any 2 nodes given by their keys using UDP/Benc.
 
 ### Setup:
 
