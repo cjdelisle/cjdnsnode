@@ -215,16 +215,6 @@ const addNode = (ctx, node, overwrite) => {
 const handleAnnounce = (ctx, annBin, fromNode) => {
     let ann;
     let replyError = 'none';
-    let annHash;
-    try {
-        annHash = Crypto.createHash('sha512').update(annBin).digest('hex');
-    } catch (e) {
-        console.log(annBin);
-        console.log(e.stack);
-        throw e;
-    }
-    //console.log("ann: " + annBin.toString('hex'));
-    console.log("ann:" + annHash);
     try {
         ann = Cjdnsann.parse(annBin);
     } catch (e) {
@@ -344,7 +334,7 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     });
 
     if (peersIp6.length) {
-        ctx.peer.addAnn(annHash, ann.binary);
+        ctx.peer.addAnn(ann.hash, ann.binary);
     }
     return { stateHash: nodeAnnouncementHash(node), error: replyError };
 };
