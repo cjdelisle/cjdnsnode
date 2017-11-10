@@ -150,7 +150,10 @@ const addAnnouncement = (ctx, node, ann) => {
     const peersAnnounced = {};
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a) => {
-        if (Number('0x' + a.timestamp) < sinceTime) { return; }
+        if (Number('0x' + a.timestamp) < sinceTime) {
+            ctx.peer.deleteAnn(a.hash);
+            return;
+        }
         let safe = false;
         const peers = peersFromAnnouncement(a);
         for (let i = 0; i < peers.length; i++) {
@@ -205,9 +208,13 @@ const mkNode = (ctx, obj) => {
 
 const addNode = (ctx, node, overwrite) => {
     if (node.type !== "Node") { throw new Error(); }
-    //if (!overwrite && ctx.nodesByKey[node.key]) { throw new Error(); }
-    if (!overwrite && ctx.nodesByIp[node.ipv6]) { throw new Error(); }
-    //ctx.nodesByKey[node.key] = node;
+    let oldNode = ctx.nodesByIp[node.ipv6];
+    if (!overwrite && oldNode) { throw new Error(); }
+    if (oldNode) {
+        oldNode.mut.announcements.forEach((ann) => {
+            ctx.peer.deleteAnn(ann.hash);
+        });
+    }
     ctx.nodesByIp[node.ipv6] = node;
     return node;
 };
@@ -534,7 +541,7 @@ const keepTableClean = (ctx) => {
             const n = now();
             if (minTime > Number(node.mut.timestamp)) {
                 console.log("forgetting node [" + nodeIp + "]");
-                delete ctx.nodesByIp;
+                delete ctx.nodesByIp[nodeIp];
                 node.mut.announcements.forEach((ann) => {
                     ctx.peer.deleteAnn(ann.hash);
                 });
