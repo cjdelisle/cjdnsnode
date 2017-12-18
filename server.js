@@ -539,7 +539,7 @@ const keepTableClean = (ctx) => {
         for (const nodeIp in ctx.nodesByIp) {
             const node = ctx.nodesByIp[nodeIp];
             const n = now();
-            if (minTime > Number(node.mut.timestamp)) {
+            if (minTime > Number('0x' + node.mut.timestamp)) {
                 console.log("forgetting node [" + nodeIp + "]");
                 delete ctx.nodesByIp[nodeIp];
                 node.mut.announcements.forEach((ann) => {
