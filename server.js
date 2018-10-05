@@ -13,9 +13,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 'use strict';
-const Fs = require('fs');
-const Net = require('net');
-const Udp = require('dgram');
 const Crypto = require('crypto');
 const nThen = require('nthen');
 const Dijkstra = require('node-dijkstra');
@@ -63,7 +60,7 @@ const getRoute = (ctx, src, dst) => {
 
     if (!ctx.mut.dijkstra) {
         ctx.mut.routeCache = {};
-        const dijkstra = ctx.mut.dijkstra = new Dijkstra();
+        ctx.mut.dijkstra = new Dijkstra();
         for (const nip in ctx.nodesByIp) {
             const links = ctx.nodesByIp[nip].inwardLinksByIp;
             const l = {};
@@ -85,7 +82,6 @@ const getRoute = (ctx, src, dst) => {
     }
     path.reverse();
     let last;
-    let lastLink;
     const hops = [];
     const labels = [];
     let formNum;
@@ -146,6 +142,15 @@ const addAnnouncement = (ctx, node, ann) => {
     const sinceTime = time - AGREED_TIMEOUT_MS;
     const newAnnounce = [];
     const peersAnnounced = {};
+    // Dirty trick to preserve the last reset message in order to
+    // allow downstream snode peers to be able to get the version and the
+    // encoding scheme of the node without telling the node that in fact we
+    // have to preserve this stuff, because it thinks we're going to delete them
+    // and if we don't tell it the right hash, it will go into desync mode.
+    if (ann.isReset) {
+        if (node.mut.resetMsg) { ctx.peer.deleteAnn(node.mut.resetMsg.hash); }
+        node.mut.resetMsg = ann;
+    }
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a) => {
         if (Number('0x' + a.timestamp) < sinceTime) {
@@ -161,7 +166,7 @@ const addAnnouncement = (ctx, node, ann) => {
         }
         if (safe) {
             newAnnounce.push(a);
-        } else {
+        } else if (a !== node.mut.resetMsg) {
             ctx.peer.deleteAnn(a.hash);
         }
     });
@@ -196,7 +201,7 @@ const mkNode = (ctx, obj) => {
             timestamp: obj.timestamp,
             announcements: [ ],
             stateHash: undefined,
-
+            resetMsg: undefined,
         }
     });
     if (obj.announcement) {
@@ -289,6 +294,11 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         return { stateHash: nodeAnnouncementHash(node), error: replyError };
     }
 
+    console.log("ANN from [" + ann.nodeIp + "] ts [" +
+        ann.timestamp + "] isReset: [" + String(ann.isReset) + "] peers [" +
+        ann.entities.filter((a) => (a.type === 'Peer')).length + "] ls [" +
+        ann.entities.filter((a) => (a.type === 'LinkState')).length + "]");
+
     const nodex = mkNode(ctx, {
         version: version,
         key: ann.nodePubKey,
@@ -309,9 +319,9 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
             console.log("encodingScheme change, replacing node");
             node = addNode(ctx, nodex, true);
         } else if (ann.isReset) {
-            console.log("reset message");
+            //console.log("reset message");
             node = addNode(ctx, nodex, true);
-            console.log(node.mut.announcements.length + ' announcements');
+            //console.log(node.mut.announcements.length + ' announcements');
         } else {
             addAnnouncement(ctx, node, ann);
         }
@@ -378,7 +388,7 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
         delete msg.contentBenc.tar;
         cjdnslink.send(msg);
     } else if (msg.contentBenc.sq.toString('utf8') === 'ann') {
-        const reply = handleAnnounce(ctx, msg.contentBenc.ann, true, false);
+        const reply = handleAnnounce(ctx, msg.contentBenc.ann, true);
         if (!ctx.mut.selfNode) { throw new Error(); }
         msg.contentBenc = {
             txid: msg.contentBenc.txid,
@@ -507,7 +517,7 @@ const testSrv = (ctx) => {
             res.end(out.map((x)=>JSON.stringify(x)).join('\n'));
         } else if (ents[0] === 'dump') {
             res.setHeader('Content-Type', 'application/octet-stream');
-            for (const ip in ctx.nodesByIp) {
+            Object.keys(ctx.nodesByIp).forEach((ip) => {
                 const node = ctx.nodesByIp[ip];
                 node.mut.announcements.forEach((ann) => {
                     const len = new Buffer(4);
@@ -515,7 +525,7 @@ const testSrv = (ctx) => {
                     res.write(len);
                     res.write(ann.binary);
                 });
-            }
+            });
             const end = new Buffer(4);
             end.writeInt32BE(0, 0);
             res.end(end);
@@ -533,9 +543,8 @@ const keepTableClean = (ctx) => {
     setInterval(() => {
         console.log("keepTableClean()");
         const minTime = now() - GLOBAL_TIMEOUT_MS;
-        for (const nodeIp in ctx.nodesByIp) {
+        Object.keys(ctx.nodesByIp).forEach((nodeIp) => {
             const node = ctx.nodesByIp[nodeIp];
-            const n = now();
             if (minTime > Number('0x' + node.mut.timestamp)) {
                 console.log("forgetting node [" + nodeIp + "]");
                 delete ctx.nodesByIp[nodeIp];
@@ -543,7 +552,7 @@ const keepTableClean = (ctx) => {
                     ctx.peer.deleteAnn(ann.hash);
                 });
             }
-        }
+        });
     }, KEEP_TABLE_CLEAN_CYCLE);
 };
 
@@ -577,7 +586,7 @@ const main = () => {
     keepTableClean(ctx);
     if (config.connectCjdns) { service(ctx); }
     testSrv(ctx);
-    ctx.peer.onAnnounce((peer, msg) => { handleAnnounce(ctx, msg, false, false); });
+    ctx.peer.onAnnounce((peer, msg) => { handleAnnounce(ctx, msg, false); });
     (ctx.config.peers || []).forEach(ctx.peer.connectTo);
 };
 main();

@@ -62,6 +62,30 @@ const sendPeerMsg = function (ctx, peer, msg) {
     }
 };
 
+const getData = (ctx, peer, hash) => {
+    const seq = ctx.mut.seq++;
+    peer.outstandingRequests.push({ seq: seq, data: null });
+    sendPeerMsg(ctx, peer, [seq, 'GET_DATA', new Buffer(hash, 'hex')]);
+};
+
+const onData = (ctx, seq, peer, data) => {
+    let ok = false;
+    for (let i = 0; i < peer.outstandingRequests.length; i++) {
+        const r = peer.outstandingRequests[i];
+        if (seq !== r.seq) { continue; }
+        r.data = data;
+        ok = true;
+        break;
+    }
+    if (!ok) { throw new Error(); }
+    for (;;) {
+        const r = peer.outstandingRequests[0];
+        if (!r.data) { break; }
+        ctx.mut.onAnnounce(peer, r.data);
+        peer.outstandingRequests.shift();
+    }
+};
+
 const handleMessage = (ctx, peer, message) => {
     const msg = ctx.msgpack.decode(message);
     if (typeof(msg[0]) !== 'number' || typeof(msg[1]) !== 'string') {
@@ -98,17 +122,19 @@ const handleMessage = (ctx, peer, message) => {
             if (!peer.outgoing) { return; }
             const hexList = msg[3].map((x) => (x.toString('hex')));
             const needHex = hexList.filter((x) => (!(x in ctx.annByHash)));
-            console.log('INV need: ' + needHex.length);
+            console.log('>INV need: ' + needHex.length);
             //console.log("need: " + needHex.join('\n'));
             needHex.forEach((x) => {
-                sendPeerMsg(ctx, peer, [ctx.mut.seq++, 'GET_DATA', new Buffer(x, 'hex')]);
+                getData(ctx, peer, x);
+                //sendPeerMsg(ctx, peer, [ctx.mut.seq++, 'GET_DATA', new Buffer(x, 'hex')]);
             });
             return;
         }
         case 'DATA': {
             if (!peer.outgoing) { return; }
             if (!msg[2]) { return; }
-            ctx.mut.onAnnounce(peer, msg[2]);
+            onData(ctx, msg[0], peer, msg[2]);
+            //ctx.mut.onAnnounce(peer, msg[2]);
         }
     }
 };
@@ -120,7 +146,8 @@ const mkPeer = (ctx, socket, isOutgoing) => {
         outgoing: isOutgoing,
         mut: {
             timeOfLastMessage: now()
-        }
+        },
+        outstandingRequests: []
     };
     socket.peer = peer;
     return peer;
@@ -227,7 +254,7 @@ const create = module.exports.create = () => {
             seq: +new Date(),
             peerIdSeq: 0,
             pingCycle: undefined,
-            onAnnounce: NOFUNC,
+            onAnnounce: (x,y)=>{},
         }
     });
     ctx.mut.pingCycle = setInterval(() => { pingCycle(ctx); }, PING_CYCLE_MS);
