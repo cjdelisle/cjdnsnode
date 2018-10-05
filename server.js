@@ -300,7 +300,8 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     });
     if (node) {
         if (node.mut.timestamp > ann.timestamp) {
-            console.log("old announcement, drop");
+            console.log("old announcement [" + ann.timestamp +
+                "] most recent [" + node.mut.timestamp + "]");
             return { stateHash: nodeAnnouncementHash(node), error: replyError };
         } else if (node.version !== nodex.version) {
             console.log("version change, replacing node");
@@ -340,9 +341,7 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         ctx.mut.dijkstra = undefined;
     });
 
-    if (peersIp6.length) {
-        ctx.peer.addAnn(ann.hash, ann.binary);
-    }
+    ctx.peer.addAnn(ann.hash, ann.binary);
     return { stateHash: nodeAnnouncementHash(node), error: replyError };
 };
 
