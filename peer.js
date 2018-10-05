@@ -96,10 +96,10 @@ const handleMessage = (ctx, peer, message) => {
         }
         case 'INV': {
             if (!peer.outgoing) { return; }
-            console.log('INV');
             const hexList = msg[3].map((x) => (x.toString('hex')));
             const needHex = hexList.filter((x) => (!(x in ctx.annByHash)));
-            console.log("need: " + needHex.join('\n'));
+            console.log('INV need: ' + needHex.length);
+            //console.log("need: " + needHex.join('\n'));
             needHex.forEach((x) => {
                 sendPeerMsg(ctx, peer, [ctx.mut.seq++, 'GET_DATA', new Buffer(x, 'hex')]);
             });
@@ -135,7 +135,7 @@ const incoming = (ctx, socket) => {
     console.log("Incoming connection");
     sendPeerMsg(ctx, peer, [0, 'HELLO', ctx.version]);
     ctx.peers.push(peer);
-    const hashes = Object.keys(ctx.annByHash).map((x) => (new Buffer(x, 'hex')));
+    const hashes = ctx.annHashesOrdered.map((x) => (new Buffer(x, 'hex')));
     while (hashes.length) {
         const h = hashes.splice(0, 128);
         sendPeerMsg(ctx, peer, [0, 'INV', 0, h]);
@@ -185,10 +185,17 @@ const connectTo = (ctx, url) => {
 
 const addAnn = (ctx, hash, binary) => {
     ctx.annByHash[hash] = binary;
+    ctx.annHashesOrdered.push(hash);
     ctx.peers.forEach((p) => {
         if (p.outgoing) { return; }
         sendPeerMsg(ctx, p, [0, 'INV', 0, [ new Buffer(hash, 'hex') ] ]);
     });
+};
+
+const deleteAnn = (ctx, hash) => {
+    const i = ctx.annHashesOrdered.indexOf(hash);
+    if (i > -1) { ctx.annHashesOrdered.splice(i, 1); }
+    delete ctx.annByHash[hash];
 };
 
 const pingCycle = (ctx) => {
@@ -213,6 +220,7 @@ const create = module.exports.create = () => {
     const ctx = Object.freeze({
         peers: [],
         annByHash: {},
+        annHashesOrdered: [],
         msgpack: Msgpack(),
         version: 1,
         mut: {
@@ -227,7 +235,7 @@ const create = module.exports.create = () => {
     return {
         connectTo: (url /*:string*/) => { connectTo(ctx, url); },
         addAnn: (hash /*:string*/, binary /*:Buffer*/) => { addAnn(ctx, hash, binary); },
-        deleteAnn: (hash /*:string*/) => { delete ctx.annByHash[hash]; },
+        deleteAnn: (hash /*:string*/) => { deleteAnn(ctx, hash); },
         runServer: (httpServer /*:Http.Server*/) => { runServer(ctx, httpServer); },
         onAnnounce: (handler /*:function*/) => { ctx.mut.onAnnounce = handler; }
     };

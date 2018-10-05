@@ -43,12 +43,10 @@ const mkLink = (annPeer, ann) => {
     return Object.freeze({
         label: annPeer.label,
         mtu: annPeer.mtu,
-        drops: annPeer.drops,
-        latency: annPeer.latency,
-        penalty: annPeer.penalty,
         encodingFormNum: annPeer.encodingFormNum,
         flags: annPeer.flags,
-        time: Number('0x' + ann.timestamp)
+        time: Number('0x' + ann.timestamp),
+        peerNum: annPeer.peerNum
     });
 };
 
@@ -197,7 +195,8 @@ const mkNode = (ctx, obj) => {
         mut: {
             timestamp: obj.timestamp,
             announcements: [ ],
-            stateHash: undefined
+            stateHash: undefined,
+
         }
     });
     if (obj.announcement) {
@@ -500,8 +499,7 @@ const testSrv = (ctx) => {
                         "-",
                         node.key,
                         otherNode ? otherNode.key : peerIp,
-                        link.label,
-                        link.drops
+                        link.label
                     ]);
                 }
             }
