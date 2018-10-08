@@ -264,6 +264,10 @@ const create = module.exports.create = () => {
         addAnn: (hash /*:string*/, binary /*:Buffer*/) => { addAnn(ctx, hash, binary); },
         deleteAnn: (hash /*:string*/) => { deleteAnn(ctx, hash); },
         runServer: (httpServer /*:Http.Server*/) => { runServer(ctx, httpServer); },
-        onAnnounce: (handler /*:function*/) => { ctx.mut.onAnnounce = handler; }
+        onAnnounce: (handler /*:function*/) => { ctx.mut.onAnnounce = handler; },
+        info: () => ({
+            peers: ctx.peers.map((p) => (p.socket._socket.remoteAddress) ),
+            announcements: ctx.annHashesOrdered.length
+        })
     };
 };

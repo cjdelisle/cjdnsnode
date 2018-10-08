@@ -154,7 +154,7 @@ const addAnnouncement = (ctx, node, ann) => {
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a) => {
         if (Number('0x' + a.timestamp) < sinceTime) {
-            ctx.peer.deleteAnn(a.hash);
+            if (a !== node.mut.resetMsg) { ctx.peer.deleteAnn(a.hash); }
             return;
         }
         let safe = false;
@@ -218,6 +218,7 @@ const addNode = (ctx, node, overwrite) => {
         oldNode.mut.announcements.forEach((ann) => {
             ctx.peer.deleteAnn(ann.hash);
         });
+        if (oldNode.mut.resetMsg) { ctx.peer.deleteAnn(oldNode.mut.resetMsg); }
     }
     ctx.nodesByIp[node.ipv6] = node;
     return node;
@@ -236,7 +237,15 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     //console.log(+new Date());
 
     let node;
-    if (ann) { node = ctx.nodesByIp[ann.nodeIp]; }
+    if (ann) {
+        node = ctx.nodesByIp[ann.nodeIp];
+        console.log("ANN from [" + ann.nodeIp + "] " +
+            "ts [" + ann.timestamp + "] " +
+            "isReset [" + String(ann.isReset) + "] " +
+            "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
+            "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
+            "known [" + (!!node) + "]");
+    }
 
     if (fromNode && ann && node && node.mut.timestamp > ann.timestamp) {
         console.log("old timestamp");
@@ -293,11 +302,6 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     if (!ann) {
         return { stateHash: nodeAnnouncementHash(node), error: replyError };
     }
-
-    console.log("ANN from [" + ann.nodeIp + "] ts [" +
-        ann.timestamp + "] isReset: [" + String(ann.isReset) + "] peers [" +
-        ann.entities.filter((a) => (a.type === 'Peer')).length + "] ls [" +
-        ann.entities.filter((a) => (a.type === 'LinkState')).length + "]");
 
     const nodex = mkNode(ctx, {
         version: version,
@@ -529,6 +533,11 @@ const testSrv = (ctx) => {
             const end = new Buffer(4);
             end.writeInt32BE(0, 0);
             res.end(end);
+        } else if (ents[0] === '') {
+            res.end(JSON.stringify({
+                peer: ctx.peer.info(),
+                nodesByIp: Object.keys(ctx.nodesByIp).length
+            }, null, '  '));
         } else {
             //console.log(req.url);
             res.end(req.url);
@@ -570,7 +579,6 @@ const main = () => {
         //nodesByKey: {},
         //ipnodes: {},
         nodesByIp: {},
-        clients: [],
         version: 1,
 
         config: config,
