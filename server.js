@@ -142,15 +142,6 @@ const addAnnouncement = (ctx, node, ann) => {
     const sinceTime = time - AGREED_TIMEOUT_MS;
     const newAnnounce = [];
     const peersAnnounced = {};
-    // Dirty trick to preserve the last reset message in order to
-    // allow downstream snode peers to be able to get the version and the
-    // encoding scheme of the node without telling the node that in fact we
-    // have to preserve this stuff, because it thinks we're going to delete them
-    // and if we don't tell it the right hash, it will go into desync mode.
-    if (ann.isReset) {
-        if (node.mut.resetMsg) { ctx.peer.deleteAnn(node.mut.resetMsg.hash); }
-        node.mut.resetMsg = ann;
-    }
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a) => {
         if (Number('0x' + a.timestamp) < sinceTime) {
@@ -201,11 +192,17 @@ const mkNode = (ctx, obj) => {
             timestamp: obj.timestamp,
             announcements: [ ],
             stateHash: undefined,
+
+            // Dirty trick to preserve the last reset message in order to
+            // allow downstream snode peers to be able to get the version and the
+            // encoding scheme of the node without telling the node that in fact we
+            // have to preserve this stuff, because it thinks we're going to delete them
+            // and if we don't tell it the right hash, it will go into desync mode.
             resetMsg: undefined,
         }
     });
     if (obj.announcement) {
-        out.mut.announcements[0] = obj.announcement;
+        out.mut.resetMsg = out.mut.announcements[0] = obj.announcement;
     }
     return out;
 };
@@ -244,7 +241,7 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
             "isReset [" + String(ann.isReset) + "] " +
             "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
             "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
-            "known [" + (!!node) + "]");
+            "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));
     }
 
     if (fromNode && ann && node && node.mut.timestamp > ann.timestamp) {
@@ -303,34 +300,26 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         return { stateHash: nodeAnnouncementHash(node), error: replyError };
     }
 
-    const nodex = mkNode(ctx, {
-        version: version,
-        key: ann.nodePubKey,
-        encodingScheme: scheme,
-        timestamp: ann.timestamp,
-        ipv6: ann.nodeIp,
-        announcement: ann
-    });
-    if (node) {
-        if (node.mut.timestamp > ann.timestamp) {
-            console.log("old announcement [" + ann.timestamp +
+    if (node && node.mut.timestamp > ann.timestamp) {
+        console.log("old announcement [" + ann.timestamp +
                 "] most recent [" + node.mut.timestamp + "]");
-            return { stateHash: nodeAnnouncementHash(node), error: replyError };
-        } else if (node.version !== nodex.version) {
-            console.log("version change, replacing node");
-            node = addNode(ctx, nodex, true);
-        } else if (JSON.stringify(node.encodingScheme) !== JSON.stringify(nodex.encodingScheme)) {
-            console.log("encodingScheme change, replacing node");
-            node = addNode(ctx, nodex, true);
-        } else if (ann.isReset) {
-            //console.log("reset message");
-            node = addNode(ctx, nodex, true);
-            //console.log(node.mut.announcements.length + ' announcements');
-        } else {
-            addAnnouncement(ctx, node, ann);
-        }
+        return { stateHash: nodeAnnouncementHash(node), error: replyError };
+    }
+
+    if (ann.isReset) {
+        node = addNode(ctx, mkNode(ctx, {
+            version: version,
+            key: ann.nodePubKey,
+            encodingScheme: scheme,
+            timestamp: ann.timestamp,
+            ipv6: ann.nodeIp,
+            announcement: ann
+        }), true);
+    } else if (node) {
+        addAnnouncement(ctx, node, ann);
     } else {
-        node = addNode(ctx, nodex, false);
+        console.log("no node and no reset message");
+        return { stateHash: nodeAnnouncementHash(undefined), error: "unknown_node" };
     }
 
     const peersIp6 = [];
@@ -371,18 +360,18 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
         const tarIp = Cjdnskeys.ip6BytesToString(msg.contentBenc.tar);
         const src = ctx.nodesByIp[srcIp];
         const tar = ctx.nodesByIp[tarIp];
-        const logMsg = "getRoute req " + srcIp + " " + tarIp + "  ";
+        //const logMsg = "getRoute req " + srcIp + " " + tarIp + "  ";
         const r = getRoute(ctx, src, tar);
 
         if (r) {
-            console.log(logMsg + r.label);
+            //console.log(logMsg + r.label);
             msg.contentBenc.n = Buffer.concat([
                 Cjdnskeys.keyStringToBytes(tar.key),
                 new Buffer(r.label.replace(/\./g, ''), 'hex')
             ]);
             msg.contentBenc.np = new Buffer([1, tar.version]);
         } else {
-            console.log(logMsg + "not found");
+            //console.log(logMsg + "not found");
         }
         msg.contentBenc.recvTime = now();
         msg.routeHeader.switchHeader.labelShift = 0;
