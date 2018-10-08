@@ -62,11 +62,15 @@ const doSend = (ctx, peer) => {
         return;
     }
     const list = peer.msgQueue.splice(0, SEND_BATCH_SZ);
+    peer.mut.msgsOnWire += list.length;
     const last = list.pop();
     try {
-        list.forEach((m) => { peer.socket.send(m); });
+        list.forEach((m) => { peer.socket.send(m, () => { peer.mut.msgsOnWire--; }); });
         if (last) {
-            peer.socket.send(last, () => { doSend(ctx, peer); });
+            peer.socket.send(last, () => {
+                peer.mut.msgsOnWire--;
+                doSend(ctx, peer);
+            });
             peer.mut.sendArmed = true;
         }
     } catch (e) {
@@ -164,7 +168,8 @@ const mkPeer = (ctx, socket, isOutgoing) => {
         outgoing: isOutgoing,
         mut: {
             timeOfLastMessage: now(),
-            sendArmed: false
+            sendArmed: false,
+            msgsOnWire: 0
         },
         outstandingRequests: [],
         msgQueue: [],
@@ -288,7 +293,9 @@ const create = module.exports.create = () => {
         info: () => ({
             peers: ctx.peers.map((p) => ({
                 addr: p.socket._socket.remoteAddress,
-                outstandingRequests: p.outstandingRequests.length
+                outstandingRequests: p.outstandingRequests.length,
+                msgsOnWire: p.mut.msgsOnWire,
+                msgQueue: p.msgQueue.length
             })),
             announcements: ctx.annHashesOrdered.length
         })
