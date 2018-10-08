@@ -35,6 +35,45 @@ const GLOBAL_TIMEOUT_MS = MAX_GLOBAL_CLOCKSKEW_MS + AGREED_TIMEOUT_MS;
 
 const now = () => (+new Date());
 
+// Workaround for bug fixed in:
+// https://github.com/cjdelisle/cjdns/commit/b97787073b88e3123873ed8773d07716a78bab6d
+const bswap16 = (b) => {
+    return ((b & 0xff) << 8) | ((b & 0xffff) >>> 8);
+};
+
+const linkStateUpdate = (link, ann, dst, src) => {
+    ann.entities.forEach((e) => {
+        if (e.type !== 'LinkState') { return; }
+        //console.log("LinkState " + e.nodeId + '  ' + link.peerNum);
+        if (e.nodeId !== link.peerNum && e.nodeId !== bswap16(link.peerNum)) { return; }
+        // The most recent 10 second timeslot should be Math.floor(time_of_signing / 1000 / 10)
+        const time = Number('0x' + ann.timestamp);
+        const ts = Math.floor(time / 1000 / 10);
+        // Timeslots older than AGREED_TIMEOUT_MS will be dropped
+        const earliestOkTs = ts - Math.floor(AGREED_TIMEOUT_MS / 100 / 10);
+        Object.keys(link.linkState).forEach((ls) => {
+            if (Number(ls) < earliestOkTs) { delete link.linkState[ls]; }
+        });
+        for (let i = e.startingPoint - 1; i !== e.startingPoint; i--) {
+            if (i < 0) { i = Cjdnsann.LinkState.SLOTS; }
+            if (link.linkState[ts]) { continue; } // TODO: check if the numbers are the same?
+            let x = {
+                drops: e.dropSlots[i],
+                lag: e.lagSlots[i],
+                kbRecv: e.kbRecvSlots[i]
+            };
+            if (typeof(x.drops) === 'undefined' &&
+                typeof(x.lag) === 'undefined' &&
+                typeof(x.kbRecv) === 'undefined')
+            {
+                continue;
+            }
+            link.linkState[ts] = x;
+            console.log(JSON.stringify(["LINK_STATE_UPDATE", ts, dst, src, link.label, x]));
+        }
+    });
+};
+
 const mkLink = (annPeer, ann) => {
     if (!ann) { throw new Error(); }
     return Object.freeze({
@@ -43,7 +82,8 @@ const mkLink = (annPeer, ann) => {
         encodingFormNum: annPeer.encodingFormNum,
         flags: annPeer.flags,
         time: Number('0x' + ann.timestamp),
-        peerNum: annPeer.peerNum
+        peerNum: annPeer.peerNum,
+        linkState: {}
     });
 };
 
@@ -236,12 +276,14 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     let node;
     if (ann) {
         node = ctx.nodesByIp[ann.nodeIp];
-        console.log("ANN from [" + ann.nodeIp + "] " +
-            "ts [" + ann.timestamp + "] " +
-            "isReset [" + String(ann.isReset) + "] " +
-            "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
-            "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
-            "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));
+        if (0) {
+            console.log("ANN from [" + ann.nodeIp + "] " +
+                "ts [" + ann.timestamp + "] " +
+                "isReset [" + String(ann.isReset) + "] " +
+                "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
+                "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
+                "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));
+        }
     }
 
     if (fromNode && ann && node && node.mut.timestamp > ann.timestamp) {
@@ -333,13 +375,16 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
             return;
         }
         const stored = node.inwardLinksByIp[ipv6];
-        const newLink = node.inwardLinksByIp[ipv6] = mkLink(peer, ann);
+        const newLink = mkLink(peer, ann);
         if (!stored) {
         } else if (newLink.label !== stored.label) {
         } else if (linkValue(newLink) !== linkValue(stored)) {
         } else {
+            linkStateUpdate(stored, ann, node.ipv6, ipv6);
             return;
         }
+        linkStateUpdate(newLink, ann, node.ipv6, ipv6);
+        node.inwardLinksByIp[ipv6] = newLink;
         ctx.mut.dijkstra = undefined;
     });
 
@@ -505,6 +550,8 @@ const testSrv = (ctx) => {
             } else {
                 res.end(JSON.stringify({ node: ctx.nodesByIp[ents[1]] }, null, '  '));
             }
+        } else if (ents[0] === 'ls') {
+
         } else if (ents[0] === 'walk') {
             const out = [];
             const outLinks = [];

@@ -155,7 +155,7 @@ const handleMessage = (ctx, peer, message) => {
             if (!peer.outgoing) { return; }
             const hexList = msg[3].map((x) => (x.toString('hex')));
             const needHex = hexList.filter((x) => (!(x in ctx.annByHash)));
-            console.log('>INV need: ' + needHex.length);
+            //console.log('>INV need: ' + needHex.length);
             //console.log("need: " + needHex.join('\n'));
             needHex.forEach((x) => {
                 getData(ctx, peer, x);
