@@ -144,10 +144,7 @@ const addAnnouncement = (ctx, node, ann) => {
     const peersAnnounced = {};
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a) => {
-        if (Number('0x' + a.timestamp) < sinceTime) {
-            if (a !== node.mut.resetMsg) { ctx.peer.deleteAnn(a.hash); }
-            return;
-        }
+        if (Number('0x' + a.timestamp) < sinceTime) { return; }
         let safe = false;
         const peers = peersFromAnnouncement(a);
         for (let i = 0; i < peers.length; i++) {
@@ -155,9 +152,14 @@ const addAnnouncement = (ctx, node, ann) => {
             safe = true;
             peersAnnounced[peers[i].ipv6] = true;
         }
-        if (safe) {
+        // current announcement is always safe because it might not have actually announced anything
+        // in which case it's an empty announce just to let the snode know the node is still here...
+        if (safe || a === ann) {
             newAnnounce.push(a);
-        } else if (a !== node.mut.resetMsg) {
+        }
+    });
+    node.mut.announcements.forEach((a) => {
+        if (newAnnounce.indexOf(a) === -1 && a !== node.mut.resetMsg) {
             ctx.peer.deleteAnn(a.hash);
         }
     });
@@ -212,10 +214,8 @@ const addNode = (ctx, node, overwrite) => {
     let oldNode = ctx.nodesByIp[node.ipv6];
     if (!overwrite && oldNode) { throw new Error(); }
     if (oldNode) {
-        oldNode.mut.announcements.forEach((ann) => {
-            ctx.peer.deleteAnn(ann.hash);
-        });
-        if (oldNode.mut.resetMsg) { ctx.peer.deleteAnn(oldNode.mut.resetMsg); }
+        oldNode.mut.announcements.forEach((ann) => { ctx.peer.deleteAnn(ann.hash); });
+        if (oldNode.mut.resetMsg) { ctx.peer.deleteAnn(oldNode.mut.resetMsg.hash); }
     }
     ctx.nodesByIp[node.ipv6] = node;
     return node;
@@ -236,12 +236,12 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     let node;
     if (ann) {
         node = ctx.nodesByIp[ann.nodeIp];
-        /*console.log("ANN from [" + ann.nodeIp + "] " +
+        console.log("ANN from [" + ann.nodeIp + "] " +
             "ts [" + ann.timestamp + "] " +
             "isReset [" + String(ann.isReset) + "] " +
             "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
             "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
-            "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));*/
+            "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));
     }
 
     if (fromNode && ann && node && node.mut.timestamp > ann.timestamp) {
@@ -343,7 +343,9 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         ctx.mut.dijkstra = undefined;
     });
 
-    ctx.peer.addAnn(ann.hash, ann.binary);
+    if (node.mut.announcements.indexOf(ann) > -1 || node.mut.resetAnn === ann) {
+        ctx.peer.addAnn(ann.hash, ann.binary);
+    }
     return { stateHash: nodeAnnouncementHash(node), error: replyError };
 };
 
@@ -479,7 +481,30 @@ const testSrv = (ctx) => {
             const r = getRoute(ctx, src, tar);
             res.end(JSON.stringify(r, null, '  '));
         } else if (ents[0] === 'ni') {
-            res.end(JSON.stringify({ node: ctx.nodesByIp[ents[1]] }, null, '  '));
+            if (!ents[1]) {
+                let totalAnn = 0;
+                let resets = 0;
+                res.end(JSON.stringify({
+                    nodes: Object.keys(ctx.nodesByIp).map((ip6) => {
+                        const n = ctx.nodesByIp[ip6];
+                        const announcements = n.mut.announcements.length;
+                        totalAnn += announcements;
+                        const rst = (n.mut.resetAnn && n.mut.announcements.indexOf(n.mut.resetAnn) === -1);
+                        if (rst) { resets++; }
+                        return {
+                            ip6: ip6,
+                            announcements: announcements,
+                            rst: rst
+                        };
+                    }),
+                    totalAnnouncements: totalAnn,
+                    totalWithRsts: resets + totalAnn,
+                    peerInfo: ctx.peer.info(),
+                    totalNodes: Object.keys(ctx.nodesByIp).length
+                }, null, '  '));
+            } else {
+                res.end(JSON.stringify({ node: ctx.nodesByIp[ents[1]] }, null, '  '));
+            }
         } else if (ents[0] === 'walk') {
             const out = [];
             const outLinks = [];
@@ -546,9 +571,8 @@ const keepTableClean = (ctx) => {
             if (minTime > Number('0x' + node.mut.timestamp)) {
                 console.log("forgetting node [" + nodeIp + "]");
                 delete ctx.nodesByIp[nodeIp];
-                node.mut.announcements.forEach((ann) => {
-                    ctx.peer.deleteAnn(ann.hash);
-                });
+                node.mut.announcements.forEach((ann) => { ctx.peer.deleteAnn(ann.hash); });
+                if (node.mut.resetAnn) { ctx.peer.deleteAnn(node.mut.resetAnn.hash); }
             }
         });
     }, KEEP_TABLE_CLEAN_CYCLE);

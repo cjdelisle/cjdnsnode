@@ -4,7 +4,7 @@
   "dependencies": {
     "bencode": "~0.7.0",
     "cjdnsadmin": "~0.0.0",
-    "cjdnsann": "^0.2.2",
+    "cjdnsann": "^0.3.0",
     "cjdnskeys": "~0.1.0",
     "cjdnsniff": "~0.2.6",
     "cjdnsplice": "~0.2.0",
