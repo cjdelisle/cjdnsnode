@@ -52,14 +52,32 @@ const dropPeer = (ctx, peer) => {
     }
 };
 
-const sendPeerMsg = function (ctx, peer, msg) {
-    if (!socketSendable(peer.socket)) { return; }
+const SEND_BATCH_SZ = 10;
+
+const doSend = (ctx, peer) => {
+    peer.mut.sendArmed = false;
+    if (!socketSendable(peer.socket)) {
+        setTimeout(() => { doSend(ctx, peer); }, 100);
+        peer.mut.sendArmed = true;
+        return;
+    }
+    const list = peer.msgQueue.splice(0, SEND_BATCH_SZ);
+    const last = list.pop();
     try {
-        peer.socket.send(ctx.msgpack.encode(msg));
+        list.forEach((m) => { peer.socket.send(m); });
+        if (last) {
+            peer.socket.send(last, () => { doSend(ctx, peer); });
+            peer.mut.sendArmed = true;
+        }
     } catch (e) {
         console.log(e.stack);
         dropPeer(ctx, peer);
     }
+};
+
+const sendPeerMsg = function (ctx, peer, msg) {
+    peer.msgQueue.push(ctx.msgpack.encode(msg));
+    if (!peer.mut.sendArmed) { doSend(ctx, peer); }
 };
 
 const getData = (ctx, peer, hash) => {
@@ -78,12 +96,12 @@ const onData = (ctx, seq, peer, data) => {
         break;
     }
     if (!ok) { throw new Error(); }
-    for (;;) {
+    do {
         const r = peer.outstandingRequests[0];
         if (!r.data) { break; }
         ctx.mut.onAnnounce(peer, r.data);
         peer.outstandingRequests.shift();
-    }
+    } while (peer.outstandingRequests.length);
 };
 
 const handleMessage = (ctx, peer, message) => {
@@ -145,9 +163,11 @@ const mkPeer = (ctx, socket, isOutgoing) => {
         socket: socket,
         outgoing: isOutgoing,
         mut: {
-            timeOfLastMessage: now()
+            timeOfLastMessage: now(),
+            sendArmed: false
         },
-        outstandingRequests: []
+        outstandingRequests: [],
+        msgQueue: [],
     };
     socket.peer = peer;
     return peer;
@@ -266,7 +286,10 @@ const create = module.exports.create = () => {
         runServer: (httpServer /*:Http.Server*/) => { runServer(ctx, httpServer); },
         onAnnounce: (handler /*:function*/) => { ctx.mut.onAnnounce = handler; },
         info: () => ({
-            peers: ctx.peers.map((p) => (p.socket._socket.remoteAddress) ),
+            peers: ctx.peers.map((p) => ({
+                addr: p.socket._socket.remoteAddress,
+                outstandingRequests: p.outstandingRequests.length
+            })),
             announcements: ctx.annHashesOrdered.length
         })
     };
