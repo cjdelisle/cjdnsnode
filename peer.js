@@ -90,22 +90,33 @@ const getData = (ctx, peer, hash) => {
     sendPeerMsg(ctx, peer, [seq, 'GET_DATA', new Buffer(hash, 'hex')]);
 };
 
+const NO_DATA /*:any*/ = Object.freeze({});
+
+const acceptAnnounces = (ctx, peer) => {
+    peer.mut.acceptAnnouncesArmed = false;
+    const r = peer.outstandingRequests[0];
+    if (!r || !r.data) { return; }
+    peer.outstandingRequests.shift();
+    if (r.data !== NO_DATA) {
+        ctx.mut.onAnnounce(peer, r.data);
+    } else {
+        console.log("Response with no data");
+    }
+    peer.mut.acceptAnnouncesArmed = true;
+    setTimeout(() => { acceptAnnounces(ctx, peer); });
+};
+
 const onData = (ctx, seq, peer, data) => {
     let ok = false;
     for (let i = 0; i < peer.outstandingRequests.length; i++) {
         const r = peer.outstandingRequests[i];
         if (seq !== r.seq) { continue; }
-        r.data = data;
+        r.data = data || NO_DATA;
         ok = true;
         break;
     }
     if (!ok) { throw new Error(); }
-    do {
-        const r = peer.outstandingRequests[0];
-        if (!r.data) { break; }
-        ctx.mut.onAnnounce(peer, r.data);
-        peer.outstandingRequests.shift();
-    } while (peer.outstandingRequests.length);
+    if (!peer.mut.acceptAnnouncesArmed) { acceptAnnounces(ctx, peer); }
 };
 
 const handleMessage = (ctx, peer, message) => {
@@ -153,8 +164,10 @@ const handleMessage = (ctx, peer, message) => {
             return;
         }
         case 'DATA': {
-            if (!peer.outgoing) { return; }
-            if (!msg[2]) { return; }
+            if (!peer.outgoing) {
+                console.log("Data from an incoming connection");
+                return;
+            }
             onData(ctx, msg[0], peer, msg[2]);
             //ctx.mut.onAnnounce(peer, msg[2]);
         }
@@ -169,6 +182,7 @@ const mkPeer = (ctx, socket, isOutgoing) => {
         mut: {
             timeOfLastMessage: now(),
             sendArmed: false,
+            acceptAnnouncesArmed: false,
             msgsOnWire: 0
         },
         outstandingRequests: [],
@@ -237,6 +251,10 @@ const connectTo = (ctx, url) => {
 
 const addAnn = (ctx, hash, binary) => {
     ctx.annByHash[hash] = binary;
+    if (ctx.annHashesOrdered.indexOf(hash) > -1) {
+        console.log("Tried to add hash [" + hash + "] multiple times");
+        return;
+    }
     ctx.annHashesOrdered.push(hash);
     ctx.peers.forEach((p) => {
         if (p.outgoing) { return; }
@@ -245,8 +263,12 @@ const addAnn = (ctx, hash, binary) => {
 };
 
 const deleteAnn = (ctx, hash) => {
-    const i = ctx.annHashesOrdered.indexOf(hash);
-    if (i > -1) { ctx.annHashesOrdered.splice(i, 1); }
+    for (;;) {
+        const i = ctx.annHashesOrdered.indexOf(hash);
+        if (i > -1) {
+            ctx.annHashesOrdered.splice(i, 1);
+        } else { break; }
+    }
     delete ctx.annByHash[hash];
 };
 
@@ -297,7 +319,8 @@ const create = module.exports.create = () => {
                 msgsOnWire: p.mut.msgsOnWire,
                 msgQueue: p.msgQueue.length
             })),
-            announcements: ctx.annHashesOrdered.length
+            announcements: ctx.annHashesOrdered.length,
+            annByHashLen: Object.keys(ctx.annByHash).length
         })
     };
 };

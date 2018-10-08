@@ -236,12 +236,12 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     let node;
     if (ann) {
         node = ctx.nodesByIp[ann.nodeIp];
-        console.log("ANN from [" + ann.nodeIp + "] " +
+        /*console.log("ANN from [" + ann.nodeIp + "] " +
             "ts [" + ann.timestamp + "] " +
             "isReset [" + String(ann.isReset) + "] " +
             "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
             "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
-            "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));
+            "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));*/
     }
 
     if (fromNode && ann && node && node.mut.timestamp > ann.timestamp) {
@@ -281,7 +281,7 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     } else if (node) {
         scheme = node.encodingScheme;
     } else if (ann) {
-        console.log("no encoding scheme");
+        //console.log("no encoding scheme");
         replyError = "no_encodingScheme";
         ann = undefined;
     }
