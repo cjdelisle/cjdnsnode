@@ -287,7 +287,7 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     }
 
     if (fromNode && ann && node &&
-        Number("0x" + node.mut.timestamp) > Number("0x" + ann.timestamp) {
+        Number("0x" + node.mut.timestamp) > Number("0x" + ann.timestamp)) {
         console.log("old timestamp");
         replyError = "old_message";
         ann = undefined;
