@@ -286,7 +286,8 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         }
     }
 
-    if (fromNode && ann && node && node.mut.timestamp > ann.timestamp) {
+    if (fromNode && ann && node &&
+        Number("0x" + node.mut.timestamp) > Number("0x" + ann.timestamp) {
         console.log("old timestamp");
         replyError = "old_message";
         ann = undefined;
@@ -342,7 +343,7 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         return { stateHash: nodeAnnouncementHash(node), error: replyError };
     }
 
-    if (node && node.mut.timestamp > ann.timestamp) {
+    if (node && Number("0x" + node.mut.timestamp) > Number("0x" + ann.timestamp)) {
         console.log("old announcement [" + ann.timestamp +
                 "] most recent [" + node.mut.timestamp + "]");
         return { stateHash: nodeAnnouncementHash(node), error: replyError };
