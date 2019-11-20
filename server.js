@@ -98,15 +98,21 @@ const getRoute = (ctx, src, dst) => {
         return { label: '0000.0000.0000.0001', hops: [] };
     }
 
-    if (!ctx.mut.dijkstra) {
+    if (ctx.mut.lastRebuild + 3000 < +new Date()) {
         ctx.mut.routeCache = {};
         ctx.mut.dijkstra = new Dijkstra();
         for (const nip in ctx.nodesByIp) {
             const links = ctx.nodesByIp[nip].inwardLinksByIp;
             const l = {};
-            for (const pip in links) { l[pip] = linkValue(links[pip]); }
+            for (const pip in links) {
+              const reverse = ctx.nodesByIp[pip];
+              if (!reverse || !reverse.inwardLinksByIp[nip]) { continue; }
+              l[pip] = linkValue(links[pip]);
+            }
+            console.log(nip, l);
             ctx.mut.dijkstra.addNode(nip, l);
         }
+        ctx.mut.lastRebuild = +new Date();
     }
 
     const cachedEntry = ctx.mut.routeCache[dst.ipv6 + '|' + src.ipv6];
@@ -372,7 +378,6 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         if (!node) { throw new Error(); }
         if (peer.label === '0000.0000.0000.0000' && node.inwardLinksByIp[ipv6]) {
             delete node.inwardLinksByIp[ipv6];
-            ctx.mut.dijkstra = undefined;
             return;
         }
         const stored = node.inwardLinksByIp[ipv6];
@@ -386,7 +391,6 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         }
         linkStateUpdate(newLink, ann, node.ipv6, ipv6);
         node.inwardLinksByIp[ipv6] = newLink;
-        ctx.mut.dijkstra = undefined;
     });
 
     if (node.mut.announcements.indexOf(ann) > -1 || node.mut.resetAnn === ann) {
@@ -563,7 +567,8 @@ const testSrv = (ctx) => {
                     Math.floor(Number('0x' + node.mut.timestamp) / 1000),
                     "-",
                     "v" + node.version + ".0000.0000.0000.0001." + node.key,
-                    node.encodingScheme
+                    node.encodingScheme,
+                    node.ipv6
                 ]);
                 for (const peerIp in node.inwardLinksByIp) {
                     const link = node.inwardLinksByIp[peerIp];
@@ -646,6 +651,7 @@ const main = () => {
         peer: Peer.create(),
 
         mut: {
+            lastRebuild: +new Date(),
             dijkstra: undefined,
             selfNode: undefined,
             routeCache: {}
