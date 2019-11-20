@@ -14,7 +14,7 @@
     "pg": "^6.1.5",
     "saferphore": "~0.0.0",
     "split": "~1.0.0",
-    "ws": "^2.2.2"
+    "ws": "^7.2.0"
   },
   "devDependencies": {
     "flow-bin": "^0.42.0",
