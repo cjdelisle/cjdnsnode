@@ -33,49 +33,222 @@ const MAX_CLOCKSKEW_MS = (1000 * 10);
 const MAX_GLOBAL_CLOCKSKEW_MS = (1000 * 60 * 60 * 20);
 const GLOBAL_TIMEOUT_MS = MAX_GLOBAL_CLOCKSKEW_MS + AGREED_TIMEOUT_MS;
 
-const now = () => (+new Date());
 
-const linkStateUpdate = (link, ann, dst, src) => {
-    ann.entities.forEach((e) => {
-        if (e.type !== 'LinkState') { return; }
-        //console.log("LinkState " + e.nodeId + '  ' + link.peerNum);
+/*::
+import type { Cjdnsniff_GenericMsg_t } from 'cjdnsniff'
+type QueryBenc_t = {
+    // Query and response
+    p: number,  // "protocol version"
+    txid: Buffer, // transaction id
 
-        // This supported a bug which was fixed in:
-        // https://github.com/cjdelisle/cjdns/commit/b97787073b88e3123873ed8773d07716a78bab6d
-        if (e.nodeId !== link.peerNum /* && e.nodeId !== bswap16(link.peerNum) */) { return; }
+    // Query only
+    sq?: Buffer, // "snode query"
+    src?: Buffer,  // for a "gr" (get-route) query, source
+    tar?: Buffer,  // for a "gr" (get-route) query, destination
+    ann?: Buffer,  // for an "ann" (announce) query, the announcement
 
-        // The most recent 10 second timeslot should be Math.floor(time_of_signing / 1000 / 10)
-        const time = Number('0x' + ann.timestamp);
-        const ts = Math.floor(time / 1000 / 10);
-        // Timeslots older than AGREED_TIMEOUT_MS will be dropped
-        const earliestOkTs = ts - Math.floor(AGREED_TIMEOUT_MS / 1000 / 10);
-        Object.keys(link.linkState).forEach((ls) => {
-            if (Number(ls) < earliestOkTs) {
-                console.log('dropping link state slot ' + Number(ls) + ' from ' + ann.ipv6 + ' for age');
-                delete link.linkState[ls];
-            }
-        });
-        for (let i = e.startingPoint - 1; i !== e.startingPoint; i--) {
-            if (i < 0) { i = Cjdnsann.LinkState.SLOTS; continue; }
-            if (link.linkState[ts]) { continue; } // TODO: check if the numbers are the same?
-            let x = {
-                drops: e.dropSlots[i],
-                lag: e.lagSlots[i],
-                kbRecv: e.kbRecvSlots[i]
-            };
-            if (typeof(x.drops) === 'undefined' &&
-                typeof(x.lag) === 'undefined' &&
-                typeof(x.kbRecv) === 'undefined')
-            {
-                continue;
-            }
-            link.linkState[ts] = x;
-            //console.log(JSON.stringify(["LINK_STATE_UPDATE", ts, dst, src, link.label, x]));
-        }
-    });
+    // Response only
+    recvTime?: number, // reply
+    stateHash?: Buffer, // reply
+    error?: string,
+    n?: Buffer,
+    np?: Buffer,
+};
+export type Query_t = Cjdnsniff_GenericMsg_t & {
+    contentBenc: QueryBenc_t;
 };
 
-const mkLink = (annPeer, ann) => {
+
+
+
+type LinkStateEntry_t = {
+    drops: number,
+    lag: number,
+    kbRecv: number,
+};
+type LinkState_t = {[number]: LinkStateEntry_t};
+type Link_t = {
+    label: string,
+    mtu: number,
+    encodingFormNum: number,
+    flags: number,
+    time: number,
+    peerNum: number,
+    linkState: LinkState_t,
+};
+type Cjdnsencode_Form_t = {
+    prefixLen: number,
+    prefix: string,
+    bitCount: number
+};
+type Cjdnsencode_Scheme_t = Cjdnsencode_Form_t[];
+type Announce_Entity_EncodingScheme_t = {
+    type: 'EncodingScheme',
+    hex: string,
+    scheme: Cjdnsencode_Scheme_t
+};
+type Announce_Entity_LinkState_t = {
+    type: 'LinkState',
+    nodeId: number,
+    startingPoint: number,
+    lagSlots: Array<number|null>,
+    dropSlots: Array<number|null>,
+    kbRecvSlots: Array<number|null>,
+};
+type Announce_Entity_Version_t = {
+    type: 'Version',
+    version: number,
+};
+type Announce_Entity_Peer_t = {
+    type: 'Peer',
+    ipv6: string,
+    label: string, // '0000.0000...'
+    mtu: number,
+    peerNum: number,
+    unused: number,
+    encodingFormNum: number,
+    flags: number,
+};
+type Announce_Entity_t = (
+    Announce_Entity_EncodingScheme_t |
+    Announce_Entity_LinkState_t |
+    Announce_Entity_Version_t |
+    Announce_Entity_Peer_t
+);
+type Announce_t = {
+    signature: string, // hex
+    pubSigningKey: string, // hex
+    snodeIp: string, // cjdns fc00::/8 ipv6
+    nodePubKey: string, // xxxxx.k
+    nodeIp: string, // cjdns fc00::/8 ipv6
+    ver: number,
+    isReset: bool,
+    timestamp: string, // hex uint64
+    entities: Array<Announce_Entity_t>,
+    binary: Buffer,
+    hash: string, // hex
+};
+type Node_t = {
+    type: "Node",
+    version: number,
+    key: string,
+    ipv6: string,
+    encodingScheme: Cjdnsencode_Scheme_t,
+    inwardLinksByIp: {[string]:Link_t},
+    mut: {
+        timestamp: string, //hex
+        announcements: Array<Announce_t>,
+        stateHash: ?Buffer,
+
+        // Dirty trick to preserve the last reset message in order to
+        // allow downstream snode peers to be able to get the version and the
+        // encoding scheme of the node without telling the node that in fact we
+        // have to preserve this stuff, because it thinks we're going to delete them
+        // and if we don't tell it the right hash, it will go into desync mode.
+        resetMsg: ?Announce_t,
+    }
+};
+
+type Response_Hop_t = {
+    label: string,
+    origLabel: string,
+    scheme: Cjdnsencode_Scheme_t,
+    inverseFormNum: number
+};
+type Response_t = {
+    label: string, // 0000.0000....
+    hops: Response_Hop_t[],
+    path: Array<string>,  // list of ipv6
+};
+const ConfigType = require('./config.example.js');
+type Config_t = typeof(ConfigType);
+type Context_t = {
+    //nodesByKey: {},
+    //ipnodes: {},
+    nodesByIp: {[string]:Node_t},
+    version: 1,
+
+    config: Config_t,
+    peer: any, // too much work to flow this
+
+    mut: {
+        lastRebuild: number, // date as number
+        dijkstra: any,
+        selfNode: ?Node_t,
+        routeCache: {[string]:?Response_t},
+        currentNode: string,
+    }
+}
+*/
+
+
+const now = () => (+new Date());
+
+const warn = (ctx /*:Context_t*/, ...msg) => {
+    console.log('WARN', ctx.mut.currentNode, ...msg);
+};
+const debug = (ctx /*:Context_t*/, ...msg) => {
+    if (ctx.mut.currentNode !== process.env.DEBUG_NODE_IP) { return; }
+    console.log('DEBUG', ...msg);
+};
+
+const linkStateUpdate1 = (ctx /*:Context_t*/, ann /*:Announce_t*/, node /*:Node_t*/) => {
+    const time = Number('0x' + ann.timestamp);
+    const ts = Math.floor(time / 1000 / 10);
+    // Timeslots older than AGREED_TIMEOUT_MS will be dropped
+    const earliestOkTs = ts - Math.floor(AGREED_TIMEOUT_MS / 1000 / 10);
+
+    const inwardLinksByNum /*:{[number]:Link_t}*/ = {};
+    const ipsByNum /*:{[number]:string}*/ = {};
+    for (const peerIp in node.inwardLinksByIp) {
+        const p = node.inwardLinksByIp[peerIp];
+        inwardLinksByNum[p.peerNum] = p;
+        ipsByNum[p.peerNum] = peerIp;
+    }    
+    for (const e of ann.entities) {
+        if (e.type !== 'LinkState') { continue; }
+        const ls = (e /*:Announce_Entity_LinkState_t*/);
+        const link = inwardLinksByNum[ls.nodeId];
+        if (!link) { continue; }
+        for (const oldLs in link.linkState) {
+            if (Number(oldLs) < earliestOkTs) {
+                //warn(ctx, 'dropping link state slot ' + oldLs + ' from ' + ann.nodeIp + ' for age');
+                delete link.linkState[Number(oldLs)];
+            }
+        }
+        // The startingPoint is the index of the *oldest* entry, newer entries continue forward from
+        // this entry. To save space, cjdns doesn't send any more entries than it needs to, which
+        // means while deserializing, the nonexistant entries will be filled by nulls.
+        //
+        // We will assign the newest entry the timeslot corresponding to the time of the announcement
+        // itself, but we don't know the timestamp of the starting point. To solve this, we
+        // walk backward from the starting point, looping at the end. But since the array is filled
+        // with empty space (nulls), we need to be careful not to start deincrementing the timeslot
+        // until we hit actual numbers.
+        const sp = e.startingPoint % Cjdnsann.LinkState.SLOTS;
+        let time = ts;
+        for (let i = sp - 1; i !== sp; i--) {
+            if (i < 0) { i = Cjdnsann.LinkState.SLOTS; continue; }
+            // If there's already a time entry for this slot, we don't care because new data wins.
+            //if (link.linkState[ts]) { continue; } // TODO: check if the numbers are the same?
+            if (typeof(e.dropSlots[i]) !== 'number') {
+            } else if (typeof(e.lagSlots[i]) !== 'number') {
+            } else if (typeof(e.kbRecvSlots[i]) !== 'number') {
+            } else {
+                const x = link.linkState[time] = {
+                    drops: e.dropSlots[i],
+                    lag: e.lagSlots[i],
+                    kbRecv: e.kbRecvSlots[i]
+                };
+                debug(ctx, JSON.stringify(
+                    ["LINK_STATE_UPDATE", time, ann.nodeIp, ipsByNum[ls.nodeId], link.label, x]));
+                time--;
+            }
+        }
+    }
+};
+
+const mkLink = (annPeer, ann /*:Announce_t*/) /*:Link_t*/ => {
     if (!ann) { throw new Error(); }
     return Object.freeze({
         label: annPeer.label,
@@ -88,20 +261,20 @@ const mkLink = (annPeer, ann) => {
     });
 };
 
-const linkValue = (link) => {
+const linkValue = (link /*:Link_t*/) => {
     return 1;
 };
 
-const getRoute = (ctx, src, dst) => {
+const getRoute = (ctx /*:Context_t*/, src /*:?Node_t*/, dst /*:?Node_t*/) => {
     if (!src || !dst) { return null; }
 
     if (src === dst) {
         return { label: '0000.0000.0000.0001', hops: [] };
     }
 
-    if (ctx.mut.lastRebuild + 3000 < +new Date()) {
+    if (ctx.mut.lastRebuild + 3000 < +new Date() || !ctx.mut.dijkstra) {
         ctx.mut.routeCache = {};
-        ctx.mut.dijkstra = new Dijkstra();
+        const d = ctx.mut.dijkstra = new Dijkstra();
         for (const nip in ctx.nodesByIp) {
             const links = ctx.nodesByIp[nip].inwardLinksByIp;
             const l = {};
@@ -110,8 +283,8 @@ const getRoute = (ctx, src, dst) => {
               if (!reverse || !reverse.inwardLinksByIp[nip]) { continue; }
               l[pip] = linkValue(links[pip]);
             }
-            //console.log('building dijkstra tree', nip, l);
-            ctx.mut.dijkstra.addNode(nip, l);
+            debug(ctx, 'building dijkstra tree', nip, l);
+            d.addNode(nip, l);
         }
         ctx.mut.lastRebuild = +new Date();
     }
@@ -123,7 +296,7 @@ const getRoute = (ctx, src, dst) => {
 
     // we ask for the path in reverse because we build the graph in reverse.
     // because nodes announce own their reachability instead of announcing reachability of others.
-    const path = ctx.mut.dijkstra.path(dst.ipv6, src.ipv6);
+    const path = ( ctx.mut.dijkstra.path(dst.ipv6, src.ipv6) /*:?Array<string>*/ );
     if (!path) {
         return (ctx.mut.routeCache[dst.ipv6 + '|' + src.ipv6] = null);
     }
@@ -143,12 +316,12 @@ const getRoute = (ctx, src, dst) => {
                 label = Cjdnsplice.reEncode(label, last.encodingScheme, formNum);
             }
             labels.unshift(label);
-            hops.push({
+            hops.push(({
                 label: label,
                 origLabel: link.label,
                 scheme: last.encodingScheme,
                 inverseFormNum: formNum
-            });
+            } /*:Response_Hop_t*/));
             formNum = link.encodingFormNum;
         }
         last = node;
@@ -158,37 +331,50 @@ const getRoute = (ctx, src, dst) => {
     return (ctx.mut.routeCache[dst.ipv6 + '|' + src.ipv6] = { label: spliced, hops: hops, path:path });
 };
 
-const nodeAnnouncementHash = (node) => {
-    let carry = new Buffer(64).fill(0);
+const nodeAnnouncementHash = (ctx /*:Context_t*/, node /*:?Node_t*/) => {
+    let carry = Buffer.alloc(64).fill(0);
+    let state = 0;
     if (node) {
+        state = node.mut.announcements.length;
         for (let i = node.mut.announcements.length - 1; i >= 0; i--) {
             const hash = Crypto.createHash('sha512').update(carry);
             carry = hash.update(node.mut.announcements[i].binary).digest();
         }
         node.mut.stateHash = carry;
     }
+    debug(ctx, "nodeAnnouncementHash", carry.toString('hex'), state);
     return carry;
 };
 
-const peersFromAnnouncement = (ann) => {
-    return (ann.entities.filter((x) => (x.type === 'Peer')) /*:Array<any>*/ );
+const peersFromAnnouncement = (ann /*:Announce_t*/) /*:Array<Announce_Entity_Peer_t>*/ => {
+    return (
+        (
+            ann.entities.filter((x) => (x.type === 'Peer')) /*:Array<any>*/
+        ) /*:Array<Announce_Entity_Peer_t>*/
+    );
 };
 
-const encodingSchemeFromAnnouncement = (ann) => {
-    const scheme /*:any*/ = ann.entities.filter((x) => (x.type === 'EncodingScheme'))[0];
-    return scheme ? scheme.scheme : undefined;
+const encodingSchemeFromAnnouncement = (ann /*:Announce_t*/) /*:?Cjdnsencode_Scheme_t*/ => {
+    for (const e of ann.entities) {
+        if (e.type === 'EncodingScheme') {
+            return (e /*:Announce_Entity_EncodingScheme_t*/).scheme;
+        }
+    }
 };
 
-const versionFromAnnouncement = (ann) => {
-    const ver /*:any*/ = ann.entities.filter((x) => (x.type === 'Version'))[0];
-    return ver ? ver.version : undefined;
+const versionFromAnnouncement = (ann /*:Announce_t*/) /*:?number*/ => {
+    for (const e of ann.entities) {
+        if (e.type === 'Version') {
+            return (e /*:Announce_Entity_Version_t*/).version;
+        }
+    }
 };
 
-const addAnnouncement = (ctx, node, ann) => {
+const addAnnouncement = (ctx /*:Context_t*/, node /*:Node_t*/, ann /*:Announce_t*/) => {
     const time = Number('0x' + ann.timestamp);
     const sinceTime = time - AGREED_TIMEOUT_MS;
     const newAnnounce = [];
-    const peersAnnounced = {};
+    const peersAnnounced /*:{[string]:bool}*/ = {};
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a) => {
         if (Number('0x' + a.timestamp) < sinceTime) { return; }
@@ -214,25 +400,27 @@ const addAnnouncement = (ctx, node, ann) => {
     node.mut.announcements = newAnnounce;
 };
 
-const mkNode = (ctx, obj) => {
+const mkNode = (ctx /*:Context_t*/, obj) /*:Node_t*/ => {
     if (typeof(obj.version) !== 'number') { throw new Error(); }
+    const version = obj.version;
     if (typeof(obj.key) !== 'string') { throw new Error(); }
     if (typeof(obj.timestamp) !== 'string') { throw new Error(); }
     if (isNaN(Number('0x' + obj.timestamp))) { throw new Error(); }
-    let encodingScheme;
-    if (typeof(obj.encodingScheme) === 'undefined') {
-        const onode = ctx.nodesByIp[obj.ipv6];
-        if (onode && typeof(onode.encodingScheme) === 'object') {
-            encodingScheme = onode.encodingScheme;
+    const encodingScheme /*:Cjdnsencode_Scheme_t*/ = (() => {
+        if (!obj.encodingScheme) {
+            const onode = ctx.nodesByIp[obj.ipv6];
+            if (onode && typeof(onode.encodingScheme) === 'object') {
+                return onode.encodingScheme;
+            } else {
+                throw new Error("cannot create node we do not know its encoding scheme");
+            }
         } else {
-            throw new Error("cannot create node we do not know its encoding scheme");
+            return obj.encodingScheme;
         }
-    } else {
-        encodingScheme = obj.encodingScheme;
-    }
+    })();
     const out = Object.freeze({
         type: "Node",
-        version: obj.version,
+        version,
         key: obj.key,
         ipv6: obj.ipv6,
         encodingScheme: encodingScheme,
@@ -256,7 +444,7 @@ const mkNode = (ctx, obj) => {
     return out;
 };
 
-const addNode = (ctx, node, overwrite) => {
+const addNode = (ctx /*:Context_t*/, node /*:Node_t*/, overwrite /*:bool*/) /*:Node_t*/ => {
     if (node.type !== "Node") { throw new Error(); }
     let oldNode = ctx.nodesByIp[node.ipv6];
     if (!overwrite && oldNode) { throw new Error(); }
@@ -268,92 +456,93 @@ const addNode = (ctx, node, overwrite) => {
     return node;
 };
 
-const handleAnnounce = (ctx, annBin, fromNode) => {
-    let ann;
+const handleAnnounce = (ctx /*:Context_t*/, annBin /*:Buffer*/, fromNode /*:bool*/) => {
+    let annOrNull /*:Announce_t|void*/;
     let replyError = 'none';
     try {
-        ann = Cjdnsann.parse(annBin);
+        annOrNull = ((Cjdnsann.parse(annBin) /*:any*/) /*:Announce_t*/);
     } catch (e) {
-        console.log("bad announcement [" + e.message + "]");
+        warn(ctx, "bad announcement [" + e.message + "]");
         replyError = "failed_parse_or_validate";
     }
-    //console.log(ann);
-    //console.log(+new Date());
+    //warn(ctx, ann);
+    //warn(ctx, +new Date());
 
     let node;
-    if (ann) {
-        node = ctx.nodesByIp[ann.nodeIp];
-        if (0) {
-            console.log("ANN from [" + ann.nodeIp + "] " +
-                "ts [" + ann.timestamp + "] " +
-                "isReset [" + String(ann.isReset) + "] " +
-                "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
-                "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
-                "known [" + (!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));
-        }
+    if (annOrNull) {
+        const ann = annOrNull;
+        ctx.mut.currentNode = annOrNull.nodeIp;
+        node = ctx.nodesByIp[annOrNull.nodeIp];
+        debug(ctx, "ANN from [" + ann.nodeIp + "] " +
+            "ts [" + ann.timestamp + "] " +
+            "isReset [" + String(ann.isReset) + "] " +
+            "peers [" + ann.entities.filter((a) => (a.type === 'Peer')).length + "] " +
+            "ls [" + ann.entities.filter((a) => (a.type === 'LinkState')).length + "] " +
+            "known [" + String(!!node) + "]" + ((!node && !ann.isReset) ? " ERR_UNKNOWN" : ""));
     }
 
-    if (fromNode && ann && node &&
-        Number("0x" + node.mut.timestamp) > Number("0x" + ann.timestamp)) {
-        console.log("old timestamp");
+    if (fromNode && annOrNull && node &&
+        Number("0x" + node.mut.timestamp) > Number("0x" + annOrNull.timestamp)) {
+        warn(ctx, "old timestamp");
         replyError = "old_message";
-        ann = undefined;
+        annOrNull = undefined;
     }
 
     let maxClockSkew;
     if (fromNode) {
         maxClockSkew = MAX_CLOCKSKEW_MS;
         if (!ctx.mut.selfNode) { throw new Error(); }
-        if (ann && ann.snodeIp !== ctx.mut.selfNode.ipv6) {
-            console.log("announcement from peer which is one of ours");
+        if (annOrNull && annOrNull.snodeIp !== ctx.mut.selfNode.ipv6) {
+            warn(ctx, "announcement from peer which is one of ours");
             replyError = "wrong_snode";
-            ann = undefined;
+            annOrNull = undefined;
         }
     } else {
         maxClockSkew = MAX_GLOBAL_CLOCKSKEW_MS;
-        if (ctx.mut.selfNode && ann && ann.snodeIp === ctx.mut.selfNode.ipv6) {
-            console.log("announcement meant for other snode");
+        if (ctx.mut.selfNode && annOrNull && annOrNull.snodeIp === ctx.mut.selfNode.ipv6) {
+            warn(ctx, "announcement meant for other snode");
             replyError = "wrong_snode";
-            ann = undefined;
+            annOrNull = undefined;
         }
     }
-    if (ann && Math.abs(new Date() - Number('0x' + ann.timestamp)) > maxClockSkew) {
-        console.log("unacceptably large clock skew " +
-            (new Date() - Number('0x' + ann.timestamp)));
+    if (annOrNull && Math.abs(new Date() - Number('0x' + annOrNull.timestamp)) > maxClockSkew) {
+        warn(ctx, "unacceptably large clock skew " +
+            (new Date() - Number('0x' + annOrNull.timestamp)));
         replyError = "excessive_clock_skew";
-        ann = undefined;
-    } else if (ann) {
-        //console.log("clock skew " + (new Date() - Number('0x' + ann.timestamp)));
+        annOrNull = undefined;
+    } else if (annOrNull) {
+        //debug(ctx, "clock skew " + (new Date() - Number('0x' + ann.timestamp)));
     }
 
     let scheme;
-    if (ann && (scheme = encodingSchemeFromAnnouncement(ann))) {
+    if (annOrNull && (scheme = encodingSchemeFromAnnouncement(annOrNull))) {
     } else if (node) {
         scheme = node.encodingScheme;
-    } else if (ann) {
-        //console.log("no encoding scheme");
+    } else if (annOrNull) {
+        warn(ctx, "no encoding scheme");
         replyError = "no_encodingScheme";
-        ann = undefined;
+        annOrNull = undefined;
     }
 
     let version;
-    if (ann && (version = versionFromAnnouncement(ann))) {
+    if (annOrNull && (version = versionFromAnnouncement(annOrNull))) {
     } else if (node) {
         version = node.version;
-    } else if (ann) {
-        console.log("no version");
+    } else if (annOrNull) {
+        warn(ctx, "no version");
         replyError = "no_version";
-        ann = undefined;
+        annOrNull = undefined;
     }
 
-    if (!ann) {
-        return { stateHash: nodeAnnouncementHash(node), error: replyError };
+    if (!annOrNull) {
+        return { stateHash: nodeAnnouncementHash(ctx, node), error: replyError };
     }
+    const ann = annOrNull;
 
     if (node && Number("0x" + node.mut.timestamp) > Number("0x" + ann.timestamp)) {
-        console.log("old announcement [" + ann.timestamp +
+        warn(ctx, "old announcement [" + ann.timestamp +
                 "] most recent [" + node.mut.timestamp + "]");
-        return { stateHash: nodeAnnouncementHash(node), error: replyError };
+        return { stateHash: nodeAnnouncementHash(ctx, node), error: replyError };
     }
 
     if (ann.isReset) {
@@ -368,8 +557,8 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
     } else if (node) {
         addAnnouncement(ctx, node, ann);
     } else {
-        console.log("no node and no reset message");
-        return { stateHash: nodeAnnouncementHash(undefined), error: "unknown_node" };
+        warn(ctx, "no node and no reset message");
+        return { stateHash: nodeAnnouncementHash(ctx, undefined), error: "unknown_node" };
     }
 
     const peersIp6 = [];
@@ -387,36 +576,43 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
         } else if (newLink.label !== stored.label) {
         } else if (linkValue(newLink) !== linkValue(stored)) {
         } else {
-            linkStateUpdate(stored, ann, node.ipv6, ipv6);
+            //linkStateUpdate(ctx, stored, ann, node.ipv6, ipv6);
             return;
         }
-        linkStateUpdate(newLink, ann, node.ipv6, ipv6);
+        //linkStateUpdate(ctx, newLink, ann, node.ipv6, ipv6);
         node.inwardLinksByIp[ipv6] = newLink;
     });
 
-    if (node.mut.announcements.indexOf(ann) > -1 || node.mut.resetAnn === ann) {
+    linkStateUpdate1(ctx, ann, node);
+
+    if (node.mut.announcements.indexOf(ann) > -1 || node.mut.resetMsg === ann) {
         ctx.peer.addAnn(ann.hash, ann.binary);
     }
-    return { stateHash: nodeAnnouncementHash(node), error: replyError };
+    return { stateHash: nodeAnnouncementHash(ctx, node), error: replyError };
 };
 
-const onSubnodeMessage = (ctx, msg, cjdnslink) => {
+const onSubnodeMessage = (ctx /*:Context_t*/, msg /*:Query_t*/, cjdnslink /*:{send:(Query_t)=>void}*/) => {
+    if (!msg.contentBenc) { return; }
     if (!msg.contentBenc.sq) { return; }
+    const sq = msg.contentBenc.sq.toString('utf8');
     if (msg.routeHeader.version) {
     } else if (!msg.contentBenc) {
     } else if (!msg.contentBenc.p) {
     } else {
         msg.routeHeader.version = msg.contentBenc.p;
     }
-    if (!msg.routeHeader.version || !msg.routeHeader.publicKey) {
+    if (!msg.routeHeader.version || !msg.routeHeader.publicKey || !msg.routeHeader.ip) {
         if (msg.routeHeader.ip) {
-            console.log("message from " + msg.routeHeader.ip + " with missing key or version " +
+            warn(ctx, "message from " + msg.routeHeader.ip + " with missing key or version " +
                 JSON.stringify(msg, null, '  '));
         }
         return;
     }
-    if (msg.contentBenc.sq.toString('utf8') === 'gr') {
+    ctx.mut.currentNode = msg.routeHeader.ip;
+    if (sq === 'gr') {
+        if (!msg.contentBenc.src) { return void warn(ctx, "missing src"); }
         const srcIp = Cjdnskeys.ip6BytesToString(msg.contentBenc.src);
+        if (!msg.contentBenc.tar) { return void warn(ctx, "missing tar"); }
         const tarIp = Cjdnskeys.ip6BytesToString(msg.contentBenc.tar);
         const src = ctx.nodesByIp[srcIp];
         const tar = ctx.nodesByIp[tarIp];
@@ -424,14 +620,14 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
         const r = getRoute(ctx, src, tar);
 
         if (r) {
-            //console.log(logMsg + r.label);
+            //debug(ctx, logMsg + r.label);
             msg.contentBenc.n = Buffer.concat([
                 Cjdnskeys.keyStringToBytes(tar.key),
                 new Buffer(r.label.replace(/\./g, ''), 'hex')
             ]);
             msg.contentBenc.np = new Buffer([1, tar.version]);
         } else {
-            //console.log(logMsg + "not found");
+            //warn(ctx, logMsg + "not found");
         }
         msg.contentBenc.recvTime = now();
         msg.routeHeader.switchHeader.labelShift = 0;
@@ -440,7 +636,7 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
         delete msg.contentBenc.src;
         delete msg.contentBenc.tar;
         cjdnslink.send(msg);
-    } else if (msg.contentBenc.sq.toString('utf8') === 'ann') {
+    } else if (sq === 'ann' && msg.contentBenc.ann) {
         const reply = handleAnnounce(ctx, msg.contentBenc.ann, true);
         if (!ctx.mut.selfNode) { throw new Error(); }
         msg.contentBenc = {
@@ -451,9 +647,9 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
             error: reply.error
         };
         msg.routeHeader.switchHeader.labelShift = 0;
-        //console.log("reply: " + reply.stateHash.toString('hex'));
+        debug(ctx, "reply: " + reply.stateHash.toString('hex'));
         cjdnslink.send(msg);
-    } else if (msg.contentBenc.sq.toString('utf8') === 'pn') {
+    } else if (sq === 'pn') {
         msg.contentBenc.recvTime = now();
         msg.contentBenc.stateHash = new Buffer(new Array(64).fill(0));
         // can't possibly be a ctrl message but needed to please flow.
@@ -470,12 +666,12 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
         delete msg.contentBenc.tar;
         cjdnslink.send(msg);
     } else {
-        console.log('contentBenc', msg.contentBenc);
+        warn(ctx, 'contentBenc', msg.contentBenc);
     }
+    ctx.mut.currentNode = '';
 };
 
-/*::import type { Cjdnsniff_BencMsg_t } from 'cjdnsniff'*/
-const service = (ctx) => {
+const service = (ctx /*:Context_t*/) => {
     let cjdns;
     nThen((waitFor) => {
         Cjdnsadmin.connectWithAdminInfo(waitFor((c) => { cjdns = c; }));
@@ -488,23 +684,23 @@ const service = (ctx) => {
                 version: parsedName.v,
                 key: parsedName.key,
                 ipv6: ipv6,
-                encodingScheme: ret.encodingScheme,
+                encodingScheme: (ret.encodingScheme /*:Cjdnsencode_Scheme_t*/),
                 inwardLinksByIp: {},
                 timestamp: 'ffffffffffffffff'
             });
-            console.log("Got selfNode");
+            warn(ctx, "Got selfNode");
         }));
     }).nThen((waitFor) => {
         Cjdnsniff.sniffTraffic(cjdns, 'CJDHT', waitFor((err, cjdnslink) => {
-            console.log("Connected to cjdns engine");
-            if (err) { throw err; }
+            warn(ctx, "Connected to cjdns engine");
+            if (!cjdnslink) { throw err; }
             cjdnslink.on('error', (e) => {
                 console.error('sniffTraffic error');
                 console.error(e.stack);
             });
             cjdnslink.on('message', (msg) => {
-                /*::msg = (msg:Cjdnsniff_BencMsg_t);*/
-                onSubnodeMessage(ctx, msg, cjdnslink);
+                msg = (msg /*:Query_t*/);
+                onSubnodeMessage(ctx, msg, (cjdnslink /*:any*/));
             });
         }));
     }).nThen((waitFor) => {
@@ -522,7 +718,7 @@ const service = (ctx) => {
     });
 };
 
-const testSrv = (ctx) => {
+const testSrv = (ctx /*:Context_t*/) => {
     const reqHandler = (req, res) => {
         const ents = req.url.split('/');
         ents.shift();
@@ -533,7 +729,7 @@ const testSrv = (ctx) => {
             const tarIp = ents[1];
             const src = ctx.nodesByIp[srcIp];
             const tar = ctx.nodesByIp[tarIp];
-            console.log("http getRoute req " + srcIp + " " + tarIp);
+            warn(ctx, "http getRoute req " + srcIp + " " + tarIp);
             if (!src) { res.end("src not found"); return; }
             if (!tar) { res.end("tar not found"); return; }
             const r = getRoute(ctx, src, tar);
@@ -547,7 +743,7 @@ const testSrv = (ctx) => {
                         const n = ctx.nodesByIp[ip6];
                         const announcements = n.mut.announcements.length;
                         totalAnn += announcements;
-                        const rst = (n.mut.resetAnn && n.mut.announcements.indexOf(n.mut.resetAnn) === -1);
+                        const rst = (n.mut.resetMsg && n.mut.announcements.indexOf(n.mut.resetMsg) === -1);
                         if (rst) { resets++; }
                         return {
                             ip6: ip6,
@@ -614,7 +810,7 @@ const testSrv = (ctx) => {
                 nodesByIp: Object.keys(ctx.nodesByIp).length
             }, null, '  '));
         } else {
-            //console.log(req.url);
+            //warn(ctx, req.url);
             res.end(req.url);
         }
     };
@@ -623,17 +819,17 @@ const testSrv = (ctx) => {
     httpServer.listen(3333);
 };
 
-const keepTableClean = (ctx) => {
+const keepTableClean = (ctx /*:Context_t*/) => {
     setInterval(() => {
-        console.log("keepTableClean()");
+        //warn(ctx, "keepTableClean()");
         const minTime = now() - GLOBAL_TIMEOUT_MS;
         Object.keys(ctx.nodesByIp).forEach((nodeIp) => {
             const node = ctx.nodesByIp[nodeIp];
             if (minTime > Number('0x' + node.mut.timestamp)) {
-                console.log("forgetting node [" + nodeIp + "]");
+                warn(ctx, "forgetting node [" + nodeIp + "]");
                 delete ctx.nodesByIp[nodeIp];
                 node.mut.announcements.forEach((ann) => { ctx.peer.deleteAnn(ann.hash); });
-                if (node.mut.resetAnn) { ctx.peer.deleteAnn(node.mut.resetAnn.hash); }
+                if (node.mut.resetMsg) { ctx.peer.deleteAnn(node.mut.resetMsg.hash); }
             }
         });
     }, KEEP_TABLE_CLEAN_CYCLE);
@@ -641,15 +837,14 @@ const keepTableClean = (ctx) => {
 
 const getConfig = () => {
     const confIdx = process.argv.indexOf('--config');
-    /*::const ConfigType = require('./config.example.js');*/
-    return (require /*:(any)=>typeof(ConfigType)*/)(
+    return (require /*:(any)=>Config_t*/)(
         (confIdx > -1) ? process.argv[confIdx+1] : './config'
     );
 };
 
 const main = () => {
     const config = getConfig();
-    let ctx = Object.freeze({
+    let ctx = (Object.freeze({
         //nodesByKey: {},
         //ipnodes: {},
         nodesByIp: {},
@@ -662,9 +857,10 @@ const main = () => {
             lastRebuild: +new Date(),
             dijkstra: undefined,
             selfNode: undefined,
-            routeCache: {}
+            routeCache: {},
+            currentNode: '',
         }
-    });
+    }) /*:Context_t*/);
 
     keepTableClean(ctx);
     if (config.connectCjdns) { service(ctx); }

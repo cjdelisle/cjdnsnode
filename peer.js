@@ -100,7 +100,7 @@ const acceptAnnounces = (ctx, peer) => {
     if (r.data !== NO_DATA) {
         ctx.mut.onAnnounce(peer, r.data);
     } else {
-        console.log("Response with no data");
+        //console.log("Response with no data");
     }
     peer.mut.acceptAnnouncesArmed = true;
     setTimeout(() => { acceptAnnounces(ctx, peer); });
@@ -108,10 +108,12 @@ const acceptAnnounces = (ctx, peer) => {
 
 const onData = (ctx, seq, peer, data) => {
     let ok = false;
+    //console.log('>DATA', data);
     for (let i = 0; i < peer.outstandingRequests.length; i++) {
         const r = peer.outstandingRequests[i];
         if (seq !== r.seq) { continue; }
         r.data = data || NO_DATA;
+        //if (r.data === NO_DATA) { throw new Error(data); }
         ok = true;
         break;
     }
