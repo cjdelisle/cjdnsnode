@@ -62,7 +62,7 @@ const linkStateUpdate = (link, ann, dst, src) => {
             }
         });
         for (let i = e.startingPoint - 1; i !== e.startingPoint; i--) {
-            if (i < 0) { i = Cjdnsann.LinkState.SLOTS - 1; }
+            if (i < 0) { i = Cjdnsann.LinkState.SLOTS; continue; }
             if (link.linkState[ts]) { continue; } // TODO: check if the numbers are the same?
             let x = {
                 drops: e.dropSlots[i],
