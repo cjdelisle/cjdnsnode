@@ -404,6 +404,12 @@ const handleAnnounce = (ctx, annBin, fromNode) => {
 
 const onSubnodeMessage = (ctx, msg, cjdnslink) => {
     if (!msg.contentBenc.sq) { return; }
+    if (msg.routeHeader.version) {
+    } else if (!msg.contentBenc) {
+    } else if (!msg.contentBenc.p) {
+    } else {
+        msg.routeHeader.version = msg.contentBenc.p;
+    }
     if (!msg.routeHeader.version || !msg.routeHeader.publicKey) {
         if (msg.routeHeader.ip) {
             console.log("message from " + msg.routeHeader.ip + " with missing key or version " +
