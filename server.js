@@ -35,8 +35,6 @@ const GLOBAL_TIMEOUT_MS = MAX_GLOBAL_CLOCKSKEW_MS + AGREED_TIMEOUT_MS;
 
 const now = () => (+new Date());
 
-
-
 const linkStateUpdate = (link, ann, dst, src) => {
     ann.entities.forEach((e) => {
         if (e.type !== 'LinkState') { return; }
@@ -72,7 +70,7 @@ const linkStateUpdate = (link, ann, dst, src) => {
                 continue;
             }
             link.linkState[ts] = x;
-            console.log(JSON.stringify(["LINK_STATE_UPDATE", ts, dst, src, link.label, x]));
+            //console.log(JSON.stringify(["LINK_STATE_UPDATE", ts, dst, src, link.label, x]));
         }
     });
 };
@@ -112,7 +110,7 @@ const getRoute = (ctx, src, dst) => {
               if (!reverse || !reverse.inwardLinksByIp[nip]) { continue; }
               l[pip] = linkValue(links[pip]);
             }
-            console.log(nip, l);
+            console.log('building dijkstra tree', nip, l);
             ctx.mut.dijkstra.addNode(nip, l);
         }
         ctx.mut.lastRebuild = +new Date();
@@ -472,7 +470,7 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
         delete msg.contentBenc.tar;
         cjdnslink.send(msg);
     } else {
-        console.log(msg.contentBenc);
+        console.log('contentBenc', msg.contentBenc);
     }
 };
 
