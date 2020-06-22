@@ -35,11 +35,7 @@ const GLOBAL_TIMEOUT_MS = MAX_GLOBAL_CLOCKSKEW_MS + AGREED_TIMEOUT_MS;
 
 const now = () => (+new Date());
 
-// Workaround for bug fixed in:
-// https://github.com/cjdelisle/cjdns/commit/b97787073b88e3123873ed8773d07716a78bab6d
-const bswap16 = (b) => {
-    return ((b & 0xff) << 8) | ((b & 0xffff) >>> 8);
-};
+
 
 const linkStateUpdate = (link, ann, dst, src) => {
     ann.entities.forEach((e) => {
@@ -57,7 +53,7 @@ const linkStateUpdate = (link, ann, dst, src) => {
         const earliestOkTs = ts - Math.floor(AGREED_TIMEOUT_MS / 1000 / 10);
         Object.keys(link.linkState).forEach((ls) => {
             if (Number(ls) < earliestOkTs) {
-                console.log('dropping link state slot ' + Number(ls) + ' for age');
+                console.log('dropping link state slot ' + Number(ls) + ' from ' + ann.ipv6 + ' for age');
                 delete link.linkState[ls];
             }
         });
@@ -410,7 +406,8 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
     if (!msg.contentBenc.sq) { return; }
     if (!msg.routeHeader.version || !msg.routeHeader.publicKey) {
         if (msg.routeHeader.ip) {
-            console.log("message from " + msg.routeHeader.ip + " with missing key or version");
+            console.log("message from " + msg.routeHeader.ip + " with missing key or version " +
+                JSON.stringify(msg.routeHeader, null, '  '));
         }
         return;
     }
@@ -450,7 +447,7 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
             error: reply.error
         };
         msg.routeHeader.switchHeader.labelShift = 0;
-        console.log("reply: " + reply.stateHash.toString('hex'));
+        //console.log("reply: " + reply.stateHash.toString('hex'));
         cjdnslink.send(msg);
     } else if (msg.contentBenc.sq.toString('utf8') === 'pn') {
         msg.contentBenc.recvTime = now();
