@@ -110,7 +110,7 @@ const getRoute = (ctx, src, dst) => {
               if (!reverse || !reverse.inwardLinksByIp[nip]) { continue; }
               l[pip] = linkValue(links[pip]);
             }
-            console.log('building dijkstra tree', nip, l);
+            //console.log('building dijkstra tree', nip, l);
             ctx.mut.dijkstra.addNode(nip, l);
         }
         ctx.mut.lastRebuild = +new Date();
