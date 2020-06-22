@@ -45,17 +45,24 @@ const linkStateUpdate = (link, ann, dst, src) => {
     ann.entities.forEach((e) => {
         if (e.type !== 'LinkState') { return; }
         //console.log("LinkState " + e.nodeId + '  ' + link.peerNum);
-        if (e.nodeId !== link.peerNum && e.nodeId !== bswap16(link.peerNum)) { return; }
+
+        // This supported a bug which was fixed in:
+        // https://github.com/cjdelisle/cjdns/commit/b97787073b88e3123873ed8773d07716a78bab6d
+        if (e.nodeId !== link.peerNum /* && e.nodeId !== bswap16(link.peerNum) */) { return; }
+
         // The most recent 10 second timeslot should be Math.floor(time_of_signing / 1000 / 10)
         const time = Number('0x' + ann.timestamp);
         const ts = Math.floor(time / 1000 / 10);
         // Timeslots older than AGREED_TIMEOUT_MS will be dropped
-        const earliestOkTs = ts - Math.floor(AGREED_TIMEOUT_MS / 100 / 10);
+        const earliestOkTs = ts - Math.floor(AGREED_TIMEOUT_MS / 1000 / 10);
         Object.keys(link.linkState).forEach((ls) => {
-            if (Number(ls) < earliestOkTs) { delete link.linkState[ls]; }
+            if (Number(ls) < earliestOkTs) {
+                console.log('dropping link state slot ' + Number(ls) + ' for age');
+                delete link.linkState[ls];
+            }
         });
         for (let i = e.startingPoint - 1; i !== e.startingPoint; i--) {
-            if (i < 0) { i = Cjdnsann.LinkState.SLOTS; }
+            if (i < 0) { i = Cjdnsann.LinkState.SLOTS - 1; }
             if (link.linkState[ts]) { continue; } // TODO: check if the numbers are the same?
             let x = {
                 drops: e.dropSlots[i],
