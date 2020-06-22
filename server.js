@@ -407,7 +407,7 @@ const onSubnodeMessage = (ctx, msg, cjdnslink) => {
     if (!msg.routeHeader.version || !msg.routeHeader.publicKey) {
         if (msg.routeHeader.ip) {
             console.log("message from " + msg.routeHeader.ip + " with missing key or version " +
-                JSON.stringify(msg.routeHeader, null, '  '));
+                JSON.stringify(msg, null, '  '));
         }
         return;
     }
