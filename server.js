@@ -28,7 +28,7 @@ const Peer = require('./peer');
 
 const MS_MINUTE = 1000 * 60;
 const KEEP_TABLE_CLEAN_CYCLE = 1000 * 30;
-const AGREED_TIMEOUT_MS = 10 * MS_MINUTE;
+const AGREED_TIMEOUT_MS = 20 * MS_MINUTE;
 const MAX_CLOCKSKEW_MS = (1000 * 10);
 const MAX_GLOBAL_CLOCKSKEW_MS = (1000 * 60 * 60 * 20);
 const GLOBAL_TIMEOUT_MS = MAX_GLOBAL_CLOCKSKEW_MS + AGREED_TIMEOUT_MS;
@@ -69,12 +69,15 @@ type LinkStateEntry_t = {
 type LinkState_t = {[number]: LinkStateEntry_t};
 type Link_t = {
     label: string,
-    mtu: number,
     encodingFormNum: number,
-    flags: number,
-    time: number,
     peerNum: number,
     linkState: LinkState_t,
+    mut: {
+        mtu: number,
+        flags: number,
+        time: number,
+        cost: number,
+    }
 };
 type Cjdnsencode_Form_t = {
     prefixLen: number,
@@ -134,7 +137,7 @@ type Node_t = {
     key: string,
     ipv6: string,
     encodingScheme: Cjdnsencode_Scheme_t,
-    inwardLinksByIp: {[string]:Link_t},
+    inwardLinksByIp: {[string]:Array<Link_t>},
     mut: {
         timestamp: string, //hex
         announcements: Array<Announce_t>,
@@ -172,6 +175,7 @@ type Context_t = {
     peer: any, // too much work to flow this
 
     mut: {
+        debugNode: string,
         lastRebuild: number, // date as number
         dijkstra: any,
         selfNode: ?Node_t,
@@ -188,7 +192,7 @@ const warn = (ctx /*:Context_t*/, ...msg) => {
     console.log('WARN', ctx.mut.currentNode, ...msg);
 };
 const debug = (ctx /*:Context_t*/, ...msg) => {
-    if (ctx.mut.currentNode !== process.env.DEBUG_NODE_IP) { return; }
+    if (ctx.mut.currentNode !== ctx.mut.debugNode) { return; }
     console.log('DEBUG', ...msg);
 };
 
@@ -201,9 +205,10 @@ const linkStateUpdate1 = (ctx /*:Context_t*/, ann /*:Announce_t*/, node /*:Node_
     const inwardLinksByNum /*:{[number]:Link_t}*/ = {};
     const ipsByNum /*:{[number]:string}*/ = {};
     for (const peerIp in node.inwardLinksByIp) {
-        const p = node.inwardLinksByIp[peerIp];
-        inwardLinksByNum[p.peerNum] = p;
-        ipsByNum[p.peerNum] = peerIp;
+        for (const p of node.inwardLinksByIp[peerIp]) {
+            inwardLinksByNum[p.peerNum] = p;
+            ipsByNum[p.peerNum] = peerIp;
+        }
     }    
     for (const e of ann.entities) {
         if (e.type !== 'LinkState') { continue; }
@@ -252,16 +257,19 @@ const mkLink = (annPeer, ann /*:Announce_t*/) /*:Link_t*/ => {
     if (!ann) { throw new Error(); }
     return Object.freeze({
         label: annPeer.label,
-        mtu: annPeer.mtu,
         encodingFormNum: annPeer.encodingFormNum,
-        flags: annPeer.flags,
-        time: Number('0x' + ann.timestamp),
         peerNum: annPeer.peerNum,
-        linkState: {}
+        linkState: {},
+        mut: {
+            time: Number('0x' + ann.timestamp),
+            mtu: annPeer.mtu,
+            cost: -1,
+            flags: annPeer.flags,
+        }
     });
 };
 
-const linkValue = (link /*:Link_t*/) => {
+const linkCost = (link /*:Link_t*/) => {
     return 1;
 };
 
@@ -279,9 +287,16 @@ const getRoute = (ctx /*:Context_t*/, src /*:?Node_t*/, dst /*:?Node_t*/) => {
             const links = ctx.nodesByIp[nip].inwardLinksByIp;
             const l = {};
             for (const pip in links) {
-              const reverse = ctx.nodesByIp[pip];
-              if (!reverse || !reverse.inwardLinksByIp[nip]) { continue; }
-              l[pip] = linkValue(links[pip]);
+                const reverse = ctx.nodesByIp[pip];
+                if (!reverse || !reverse.inwardLinksByIp[nip]) { continue; }
+                const peerLinks = links[pip];
+                for (const peerLink of peerLinks) {
+                    peerLink.mut.cost = linkCost(peerLink);
+                }
+                peerLinks.sort((a,b) => a.mut.cost - b.mut.cost);
+                // Shouldn't happen but lets be safe
+                if (!peerLinks.length) { continue; }
+                l[pip] = peerLinks[0].mut.cost;
             }
             debug(ctx, 'building dijkstra tree', nip, l);
             d.addNode(nip, l);
@@ -309,7 +324,7 @@ const getRoute = (ctx /*:Context_t*/, src /*:?Node_t*/, dst /*:?Node_t*/) => {
     path.forEach((nip) => {
         const node = ctx.nodesByIp[nip];
         if (last) {
-            const link = node.inwardLinksByIp[last.ipv6];
+            const link = node.inwardLinksByIp[last.ipv6][0];
             let label = link.label;
             const curFormNum = Cjdnsplice.getEncodingForm(label, last.encodingScheme);
             if (curFormNum < formNum) {
@@ -566,21 +581,44 @@ const handleAnnounce = (ctx /*:Context_t*/, annBin /*:Buffer*/, fromNode /*:bool
         const ipv6 = peer.ipv6;
         peersIp6.push(ipv6);
         if (!node) { throw new Error(); }
-        if (peer.label === '0000.0000.0000.0000' && node.inwardLinksByIp[ipv6]) {
-            delete node.inwardLinksByIp[ipv6];
+        if (peer.label === '0000.0000.0000.0000') {
+            const links0 = node.inwardLinksByIp[ipv6];
+            if (!links0) {
+                // Withdrawal of a route we never heard of
+                return;
+            }
+            const links = links0.filter((l) => (l.peerNum !== peer.peerNum));
+            if (!links.length) {
+                delete node.inwardLinksByIp[ipv6];
+            } else if (links.length !== links0.length) {
+                node.inwardLinksByIp[ipv6] = links;
+            }
             return;
         }
         const stored = node.inwardLinksByIp[ipv6];
         const newLink = mkLink(peer, ann);
         if (!stored) {
-        } else if (newLink.label !== stored.label) {
-        } else if (linkValue(newLink) !== linkValue(stored)) {
-        } else {
-            //linkStateUpdate(ctx, stored, ann, node.ipv6, ipv6);
+            node.inwardLinksByIp[ipv6] = [ newLink ];
             return;
         }
-        //linkStateUpdate(ctx, newLink, ann, node.ipv6, ipv6);
-        node.inwardLinksByIp[ipv6] = newLink;
+        for (let i = 0; i < stored.length; i++) {
+            const storedLink = stored[i];
+            if (storedLink.peerNum !== newLink.peerNum) { continue; }
+            if (storedLink.label !== newLink.label) {
+            } else if (storedLink.encodingFormNum !== newLink.encodingFormNum) {
+            } else {
+                // only small changes (if any)
+                storedLink.mut.flags = newLink.mut.flags;
+                storedLink.mut.mtu = newLink.mut.mtu;
+                storedLink.mut.time = newLink.mut.time;
+                return;
+            }
+            // major changes, replace the link and wipe out link state
+            stored[i] = newLink;
+            return;
+        }
+        // We get here when there is no match
+        node.inwardLinksByIp[ipv6].push(newLink);
     });
 
     linkStateUpdate1(ctx, ann, node);
@@ -775,17 +813,19 @@ const testSrv = (ctx /*:Context_t*/) => {
                     node.ipv6
                 ]);
                 for (const peerIp in node.inwardLinksByIp) {
-                    const link = node.inwardLinksByIp[peerIp];
+                    const links = node.inwardLinksByIp[peerIp];
                     const otherNode = ctx.nodesByIp[peerIp];
-                    //if (!otherNode) { continue; }
-                    outLinks.push([
-                        otherNode ? "link" : "oldlink",
-                        Math.floor(link.time / 1000),
-                        "-",
-                        node.key,
-                        otherNode ? otherNode.key : peerIp,
-                        link.label
-                    ]);
+                    if (!otherNode) { continue; }
+                    for (const link of links) {
+                        outLinks.push([
+                            "link",
+                            Math.floor(link.mut.time / 1000),
+                            "-",
+                            node.key,
+                            otherNode.key,
+                            link.label
+                        ]);
+                    }
                 }
             }
             out.push.apply(out, outLinks);
@@ -804,6 +844,8 @@ const testSrv = (ctx /*:Context_t*/) => {
             const end = new Buffer(4);
             end.writeInt32BE(0, 0);
             res.end(end);
+        } else if (ents[0] === 'debugnode') {
+            ctx.mut.debugNode = ents[1];
         } else if (ents[0] === '') {
             res.end(JSON.stringify({
                 peer: ctx.peer.info(),
@@ -854,6 +896,7 @@ const main = () => {
         peer: Peer.create(),
 
         mut: {
+            debugNode: '',
             lastRebuild: +new Date(),
             dijkstra: undefined,
             selfNode: undefined,

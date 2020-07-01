@@ -141,7 +141,7 @@ const handleMessage = (ctx, peer, message) => {
         case 'GET_DATA': {
             const hash = msg[2].toString('hex');
             const ann = ctx.annByHash[hash] || null;
-            console.log('>GET_DATA');
+            //console.log('>GET_DATA');
             sendPeerMsg(ctx, peer, [msg[0], 'DATA', ann]);
             return;
         }
