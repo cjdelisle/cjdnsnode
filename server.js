@@ -407,9 +407,11 @@ const addAnnouncement = (ctx /*:Context_t*/, node /*:Node_t*/, ann /*:Announce_t
         // in which case it's an empty announce just to let the snode know the node is still here...
         if (safe || a === ann) {
             newAnnounce.push(a);
+        } else {
+            debug(ctx, `Dropping ann [${i}] because all peers have been re-announced`);
         }
-        debug(ctx, `Dropping ann [${i}] because all peers have been re-announced`);
     });
+    debug(ctx, `Finally there are ${newAnnounce.length} anns in the state`);
     node.mut.announcements.forEach((a) => {
         if (newAnnounce.indexOf(a) === -1 && a !== node.mut.resetMsg) {
             ctx.peer.deleteAnn(a.hash);
