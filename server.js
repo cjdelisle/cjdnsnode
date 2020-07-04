@@ -385,6 +385,35 @@ const versionFromAnnouncement = (ann /*:Announce_t*/) /*:?number*/ => {
     }
 };
 
+const isEntityEphimeral = (e /*Announce_Entity_t*/) => {
+    switch (e.type) {
+        case 'Version':
+        case 'EncodingScheme':
+        case 'Peer': return false;
+        default: return true;
+    }
+};
+
+const isEntityReplacement = (oldE /*:Announce_Entity_t*/, newE /*:Announce_Entity_t*/) => {
+    if (oldE.type !== newE.type) { return false; }
+    if (oldE.type === 'EncodingScheme' || oldE.type === 'Version') {
+        return true;
+    }
+    if (oldE.type === 'Peer' && newE.type === 'Peer') {
+        return oldE.peerNum === newE.peerNum;
+    }
+    return false;
+};
+
+const printEntity = (e /*:Announce_Entity_t*/) => {
+    if (e.type === 'Peer') {
+        return e.ipv6 + '/' + e.peerNum.toString(16)
+    } else if (e.type === 'LinkState') {
+        return 'LinkState/' + e.nodeId;
+    }
+    return e.type;
+};
+
 const annId = (ann /*:Announce_t*/) => {
     return ann.hash.slice(0,8);
 };
@@ -393,7 +422,7 @@ const addAnnouncement = (ctx /*:Context_t*/, node /*:Node_t*/, ann /*:Announce_t
     const time = Number('0x' + ann.timestamp);
     const sinceTime = time - AGREED_TIMEOUT_MS;
     const newAnnounce = [];
-    const peersAnnounced /*:{[number]:bool}*/ = {};
+    const entitiesAnnounced = [];
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a, i) => {
         if (Number('0x' + a.timestamp) < sinceTime) {
@@ -401,26 +430,27 @@ const addAnnouncement = (ctx /*:Context_t*/, node /*:Node_t*/, ann /*:Announce_t
             return;
         }
         let safe = false;
-        const peers = peersFromAnnouncement(a);
-        // Justifications for this ann's safety
-        const justPeers = [];
-        for (let i = 0; i < peers.length; i++) {
-            if (peersAnnounced[peers[i].peerNum]) { continue; }
-            safe = true;
-            justPeers.push(peers[i].ipv6 + '/' + peers[i].peerNum);
-            peersAnnounced[peers[i].peerNum] = true;
+        const justifications = [];
+        for (const e of a.entities) {
+            if (isEntityEphimeral(e)) { continue; }
+            if (entitiesAnnounced.filter((je) => isEntityReplacement(e, je)).length === 0) {
+                safe = true;
+                justifications.push(printEntity(e));
+                entitiesAnnounced.push(e);
+            }
         }
         // current announcement is always safe because it might not have actually announced anything
         // in which case it's an empty announce just to let the snode know the node is still here...
         if (safe || a === ann) {
             if (a === ann) {
-                debug(ctx, `Keeping ann [${annId(a)}] its announced just now`);
+                debug(ctx, `Keeping ann [${annId(a)}] it was announced just now`);
             } else {
-                debug(ctx, `Keeping ann [${annId(a)}] for peers [${justPeers.join()}]`);
+                debug(ctx, `Keeping ann [${annId(a)}] for entities [${justifications.join()}]`);
             }
             newAnnounce.push(a);
         } else {
-            debug(ctx, `Dropping ann [${annId(a)}] because all peers have been re-announced`);
+            debug(ctx, `Dropping ann [${annId(a)}] because all entities [${
+                justifications.join()}] have been re-announced`);
         }
     });
     debug(ctx, `Finally there are ${newAnnounce.length} anns in the state`);
