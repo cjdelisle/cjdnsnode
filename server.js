@@ -385,30 +385,42 @@ const versionFromAnnouncement = (ann /*:Announce_t*/) /*:?number*/ => {
     }
 };
 
+const annId = (ann /*:Announce_t*/) => {
+    return ann.hash.slice(0,8);
+};
+
 const addAnnouncement = (ctx /*:Context_t*/, node /*:Node_t*/, ann /*:Announce_t*/) => {
     const time = Number('0x' + ann.timestamp);
     const sinceTime = time - AGREED_TIMEOUT_MS;
     const newAnnounce = [];
-    const peersAnnounced /*:{[string]:bool}*/ = {};
+    const peersAnnounced /*:{[number]:bool}*/ = {};
     node.mut.announcements.unshift(ann);
     node.mut.announcements.forEach((a, i) => {
         if (Number('0x' + a.timestamp) < sinceTime) {
-            debug(ctx, `Expiring ann [${i}] because if it is too old`);
+            debug(ctx, `Expiring ann [${annId(a)}] because if it is too old`);
             return;
         }
         let safe = false;
         const peers = peersFromAnnouncement(a);
+        // Justifications for this ann's safety
+        const justPeers = [];
         for (let i = 0; i < peers.length; i++) {
-            if (peersAnnounced[peers[i].ipv6]) { continue; }
+            if (peersAnnounced[peers[i].peerNum]) { continue; }
             safe = true;
-            peersAnnounced[peers[i].ipv6] = true;
+            justPeers.push(peers[i].ipv6 + '/' + peers[i].peerNum);
+            peersAnnounced[peers[i].peerNum] = true;
         }
         // current announcement is always safe because it might not have actually announced anything
         // in which case it's an empty announce just to let the snode know the node is still here...
         if (safe || a === ann) {
+            if (a === ann) {
+                debug(ctx, `Keeping ann [${annId(a)}] its announced just now`);
+            } else {
+                debug(ctx, `Keeping ann [${annId(a)}] for peers [${justPeers.join()}]`);
+            }
             newAnnounce.push(a);
         } else {
-            debug(ctx, `Dropping ann [${i}] because all peers have been re-announced`);
+            debug(ctx, `Dropping ann [${annId(a)}] because all peers have been re-announced`);
         }
     });
     debug(ctx, `Finally there are ${newAnnounce.length} anns in the state`);
