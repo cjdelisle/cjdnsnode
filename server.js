@@ -391,8 +391,11 @@ const addAnnouncement = (ctx /*:Context_t*/, node /*:Node_t*/, ann /*:Announce_t
     const newAnnounce = [];
     const peersAnnounced /*:{[string]:bool}*/ = {};
     node.mut.announcements.unshift(ann);
-    node.mut.announcements.forEach((a) => {
-        if (Number('0x' + a.timestamp) < sinceTime) { return; }
+    node.mut.announcements.forEach((a, i) => {
+        if (Number('0x' + a.timestamp) < sinceTime) {
+            debug(ctx, `Expiring ann [${i}] because if it is too old`);
+            return;
+        }
         let safe = false;
         const peers = peersFromAnnouncement(a);
         for (let i = 0; i < peers.length; i++) {
@@ -405,6 +408,7 @@ const addAnnouncement = (ctx /*:Context_t*/, node /*:Node_t*/, ann /*:Announce_t
         if (safe || a === ann) {
             newAnnounce.push(a);
         }
+        debug(ctx, `Dropping ann [${i}] because all peers have been re-announced`);
     });
     node.mut.announcements.forEach((a) => {
         if (newAnnounce.indexOf(a) === -1 && a !== node.mut.resetMsg) {
