@@ -73,10 +73,11 @@ type Link_t = {
     peerNum: number,
     linkState: LinkState_t,
     mut: {
+        mostRecentLsSlot: number,
         mtu: number,
         flags: number,
         time: number,
-        cost: number,
+        value: number,
     }
 };
 type Cjdnsencode_Form_t = {
@@ -196,6 +197,19 @@ const debug = (ctx /*:Context_t*/, ...msg) => {
     console.log('DEBUG', ...msg);
 };
 
+const lsValue = (slot /*:LinkStateEntry_t*/) => {
+    // 0 lag is suspicious, probably not real data
+    if (slot.lag === 0) { return 0; }
+    // Higher kb received normally means lower risk that when we send data over the link,
+    // it will be the data which finally pushes the link over the edge.
+    // But rising latency is bad news.
+    // By far the worst news is drops.
+    return slot.kbRecv / ( slot.lag * Math.pow(2, slot.drops) );
+};
+
+// Each timeslot is 10 seconds, link state value halves every 3 minutes
+const DECAY_PER_TIMESLOT = 1/18;
+
 const linkStateUpdate1 = (ctx /*:Context_t*/, ann /*:Announce_t*/, node /*:Node_t*/) => {
     const time = Number('0x' + ann.timestamp);
     const ts = Math.floor(time / 1000 / 10);
@@ -221,6 +235,13 @@ const linkStateUpdate1 = (ctx /*:Context_t*/, ann /*:Announce_t*/, node /*:Node_
                 delete link.linkState[Number(oldLs)];
             }
         }
+
+        const decaySlots = link.mut.mostRecentLsSlot - ts;
+        link.mut.mostRecentLsSlot = ts;
+        if (decaySlots > 0) {
+            link.mut.value /= 1 + (decaySlots * DECAY_PER_TIMESLOT);
+        }
+
         // The startingPoint is the index of the *oldest* entry, newer entries continue forward from
         // this entry. To save space, cjdns doesn't send any more entries than it needs to, which
         // means while deserializing, the nonexistant entries will be filled by nulls.
@@ -230,7 +251,7 @@ const linkStateUpdate1 = (ctx /*:Context_t*/, ann /*:Announce_t*/, node /*:Node_
         // walk backward from the starting point, looping at the end. But since the array is filled
         // with empty space (nulls), we need to be careful not to start deincrementing the timeslot
         // until we hit actual numbers.
-        const sp = e.startingPoint % Cjdnsann.LinkState.SLOTS;
+        const sp = ls.startingPoint % Cjdnsann.LinkState.SLOTS;
         let time = ts;
         for (let i = sp - 1; i !== sp; i--) {
             if (i < 0) { i = Cjdnsann.LinkState.SLOTS; continue; }
@@ -245,6 +266,11 @@ const linkStateUpdate1 = (ctx /*:Context_t*/, ann /*:Announce_t*/, node /*:Node_
                     lag: e.lagSlots[i],
                     kbRecv: e.kbRecvSlots[i]
                 };
+                const lsv = lsValue(x);
+                if (lsv < 0) { throw new Error(`lsv ${lsv} for ls ${JSON.stringify(x)}`); }
+                const deltaV = lsv / (1 + (ts - time) * DECAY_PER_TIMESLOT);
+                if (deltaV < 0) { throw new Error(); }
+                link.mut.value += deltaV;
                 debug(ctx, JSON.stringify(
                     ["LINK_STATE_UPDATE", time, ann.nodeIp, ipsByNum[ls.nodeId], link.label, x]));
                 time--;
@@ -255,22 +281,21 @@ const linkStateUpdate1 = (ctx /*:Context_t*/, ann /*:Announce_t*/, node /*:Node_
 
 const mkLink = (annPeer, ann /*:Announce_t*/) /*:Link_t*/ => {
     if (!ann) { throw new Error(); }
+    const time = Number('0x' + ann.timestamp);
     return Object.freeze({
         label: annPeer.label,
         encodingFormNum: annPeer.encodingFormNum,
         peerNum: annPeer.peerNum,
         linkState: {},
+        createTime: time,
         mut: {
-            time: Number('0x' + ann.timestamp),
+            mostRecentLsSlot: Math.floor(time / 1000 / 10),
+            time,
             mtu: annPeer.mtu,
-            cost: -1,
+            value: 0,
             flags: annPeer.flags,
         }
     });
-};
-
-const linkCost = (link /*:Link_t*/) => {
-    return 1;
 };
 
 const getRoute = (ctx /*:Context_t*/, src /*:?Node_t*/, dst /*:?Node_t*/) => {
@@ -290,13 +315,12 @@ const getRoute = (ctx /*:Context_t*/, src /*:?Node_t*/, dst /*:?Node_t*/) => {
                 const reverse = ctx.nodesByIp[pip];
                 if (!reverse || !reverse.inwardLinksByIp[nip]) { continue; }
                 const peerLinks = links[pip];
-                for (const peerLink of peerLinks) {
-                    peerLink.mut.cost = linkCost(peerLink);
-                }
-                peerLinks.sort((a,b) => a.mut.cost - b.mut.cost);
+                peerLinks.sort((a,b) => b.mut.value - a.mut.value);
                 // Shouldn't happen but lets be safe
                 if (!peerLinks.length) { continue; }
-                l[pip] = peerLinks[0].mut.cost;
+                let v = peerLinks[0].mut.value;
+                if (v === 0) { v = 1e-20; }
+                l[pip] = 1 / peerLinks[0].mut.value;
             }
             debug(ctx, 'building dijkstra tree', nip, l);
             d.addNode(nip, l);
@@ -551,30 +575,28 @@ const handleAnnounce = (ctx /*:Context_t*/, annBin /*:Buffer*/, fromNode /*:bool
         annOrNull = undefined;
     }
 
-    let maxClockSkew;
     if (fromNode) {
-        maxClockSkew = MAX_CLOCKSKEW_MS;
+        const maxClockSkew = MAX_CLOCKSKEW_MS;
         if (!ctx.mut.selfNode) { throw new Error(); }
         if (annOrNull && annOrNull.snodeIp !== ctx.mut.selfNode.ipv6) {
-            warn(ctx, "announcement from peer which is one of ours");
-            replyError = "wrong_snode";
-            annOrNull = undefined;
-        }
-    } else {
-        maxClockSkew = MAX_GLOBAL_CLOCKSKEW_MS;
-        if (ctx.mut.selfNode && annOrNull && annOrNull.snodeIp === ctx.mut.selfNode.ipv6) {
             warn(ctx, "announcement meant for other snode");
             replyError = "wrong_snode";
             annOrNull = undefined;
         }
-    }
-    if (annOrNull && Math.abs(new Date() - Number('0x' + annOrNull.timestamp)) > maxClockSkew) {
-        warn(ctx, "unacceptably large clock skew " +
-            (new Date() - Number('0x' + annOrNull.timestamp)));
-        replyError = "excessive_clock_skew";
-        annOrNull = undefined;
-    } else if (annOrNull) {
-        //debug(ctx, "clock skew " + (new Date() - Number('0x' + ann.timestamp)));
+        if (annOrNull && Math.abs(new Date() - Number('0x' + annOrNull.timestamp)) > maxClockSkew) {
+            warn(ctx, "unacceptably large clock skew " +
+                (new Date() - Number('0x' + annOrNull.timestamp)));
+            replyError = "excessive_clock_skew";
+            annOrNull = undefined;
+        } else if (annOrNull) {
+            //debug(ctx, "clock skew " + (new Date() - Number('0x' + ann.timestamp)));
+        }
+    } else {
+        if (ctx.mut.selfNode && annOrNull && annOrNull.snodeIp === ctx.mut.selfNode.ipv6) {
+            warn(ctx, "announcement received by gossip which is meant for us");
+            replyError = "wrong_snode";
+            annOrNull = undefined;
+        }
     }
 
     let scheme;
